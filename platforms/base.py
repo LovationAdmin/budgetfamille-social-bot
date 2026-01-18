@@ -144,29 +144,35 @@ class BasePoster(ABC):
         self.page.set_default_timeout(60000)  # 60 secondes timeout
     
     def _start_isolated_browser(self):
-        """Démarre un navigateur isolé (sans profil existant)."""
-        self.browser = self.playwright.chromium.launch(
+        """Démarre un navigateur avec un profil dédié au bot (cookies sauvegardés)."""
+        # Créer le dossier pour le profil du bot s'il n'existe pas
+        user_data_dir = Path('browser_data')
+        user_data_dir.mkdir(exist_ok=True)
+        
+        logger.info(f"📂 Utilisation du profil dédié : {user_data_dir.absolute()}")
+
+        # Lancement en mode persistant (sauvegarde les cookies ici)
+        self.context = self.playwright.chromium.launch_persistent_context(
+            user_data_dir=user_data_dir,
+            channel="chrome",  # Utilise votre vrai Chrome
             headless=self.headless,
             args=[
                 '--disable-blink-features=AutomationControlled',
                 '--no-sandbox',
-            ]
-        )
-        
-        self.context = self.browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                '--disable-infobars',
+            ],
+            viewport={'width': 1280, 'height': 720},
             locale='fr-FR',
             timezone_id='Europe/Paris',
         )
         
-        # Masquer l'automatisation
-        self.context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        """)
-        
-        self.page = self.context.new_page()
-    
+        # Récupérer la première page
+        if self.context.pages:
+            self.page = self.context.pages[0]
+        else:
+            self.page = self.context.new_page()
+
+
     def _close_browser(self):
         """Ferme proprement le navigateur."""
         try:
