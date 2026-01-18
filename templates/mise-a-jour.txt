@@ -1,0 +1,14 @@
+🔄 Mise à jour Budget Famille v{{version}}
+
+Nous avons écouté vos retours ! Voici les nouveautés :
+
+{{nouveautes}}
+
+🐛 Corrections :
+{{corrections}}
+
+Mettez à jour votre application pour en profiter !
+
+👉 budgetfamille.com
+
+#BudgetFamille #MiseAJour #Changelog #Amélioration

@@ -1,0 +1,11 @@
+🎁 Offre spéciale Budget Famille !
+
+{{description_offre}}
+
+⏰ Valable jusqu'au {{date_fin}}
+
+✨ {{avantage_principal}}
+
+👉 Profitez-en sur budgetfamille.com
+
+#BudgetFamille #Promotion #OffreSpéciale #Économies

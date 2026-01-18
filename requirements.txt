@@ -1,0 +1,35 @@
+# Budget Famille Social Bot - Dependencies
+# Python 3.9+
+
+# Browser automation
+playwright==1.40.0
+
+# Environment variables
+python-dotenv==1.0.0
+
+# CLI arguments
+click==8.1.7
+
+# Rich console output
+rich==13.7.0
+
+# Image processing (for resizing)
+Pillow==10.2.0
+
+# Date handling
+python-dateutil==2.8.2
+
+# YAML config (optional)
+PyYAML==6.0.1
+
+# Video metadata (optional)
+ffmpeg-python==0.2.0
+
+# Logging
+colorlog==6.8.0
+
+# Rate limiting
+ratelimit==2.2.1
+
+# Retry logic
+tenacity==8.2.3
