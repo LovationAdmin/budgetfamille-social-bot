@@ -164,7 +164,7 @@ def get_pending_posts(posts_dir: Path) -> List[Dict[str, Any]]:
             continue
         
         # Vérifier la date de planification si présente
-        if 'schedule' in post:
+        if 'schedule' in post and post['schedule']:
             try:
                 scheduled_time = datetime.fromisoformat(post['schedule'])
                 if scheduled_time > datetime.now():

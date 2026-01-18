@@ -1,7 +1,8 @@
 """
-Budget Famille - Twitter/X Poster
-==================================
+Budget Famille - Twitter/X Poster (Fixed)
+==========================================
 Module pour publier automatiquement sur X (Twitter).
+Support de la connexion via Google.
 """
 
 import os
@@ -19,15 +20,41 @@ class TwitterPoster(BasePoster):
     PLATFORM_NAME = "twitter"
     LOGIN_URL = "https://x.com/i/flow/login"
     HOME_URL = "https://x.com/home"
-    COMPOSE_URL = "https://x.com/compose/tweet"
     
     def __init__(self, headless: bool = True):
         super().__init__(headless)
         self.username = os.getenv('TWITTER_USER')
         self.password = os.getenv('TWITTER_PASS')
+        self.google_email = os.getenv('GOOGLE_EMAIL')
+        self.google_password = os.getenv('GOOGLE_PASS')
+        self.use_google_login = os.getenv('TWITTER_USE_GOOGLE', 'false').lower() == 'true'
+    
+    def _handle_cookie_popup(self):
+        """Gère les popups de cookies."""
+        cookie_selectors = [
+            'button:has-text("Accept all cookies")',
+            'button:has-text("Accepter tous les cookies")',
+            'button:has-text("Accept")',
+            'button:has-text("Accepter")',
+            '[data-testid="cookie-banner-accept"]',
+        ]
+        
+        for selector in cookie_selectors:
+            try:
+                btn = self.page.locator(selector).first
+                if btn.is_visible(timeout=2000):
+                    btn.click(force=True)
+                    self._random_delay(1, 2)
+                    logger.info("Popup cookies fermé")
+                    return True
+            except:
+                continue
+        return False
     
     def _dismiss_popups(self):
         """Ferme les popups X courants."""
+        self._handle_cookie_popup()
+        
         popups = [
             'div[data-testid="confirmationSheetConfirm"]',
             '[aria-label="Close"]',
@@ -42,7 +69,7 @@ class TwitterPoster(BasePoster):
             try:
                 popup = self.page.locator(popup_selector).first
                 if popup.is_visible(timeout=1000):
-                    popup.click()
+                    popup.click(force=True)
                     self._random_delay(0.5, 1)
             except:
                 continue
@@ -50,20 +77,19 @@ class TwitterPoster(BasePoster):
     def _check_logged_in(self) -> bool:
         """Vérifie si on est connecté à X."""
         try:
-            self.page.goto(self.HOME_URL, wait_until='networkidle')
+            self.page.goto(self.HOME_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
             
-            # Vérifier si on est redirigé vers login
+            self._handle_cookie_popup()
+            
             if 'login' in self.page.url.lower() or 'flow' in self.page.url.lower():
                 return False
             
-            # Chercher des éléments qui indiquent une connexion
             indicators = [
                 '[data-testid="SideNav_NewTweet_Button"]',
                 '[aria-label="Post"]',
                 '[aria-label="Poster"]',
                 '[data-testid="tweetTextarea_0"]',
-                'a[href="/compose/tweet"]',
             ]
             
             for indicator in indicators:
@@ -79,16 +105,78 @@ class TwitterPoster(BasePoster):
             logger.error(f"Erreur vérification connexion X: {e}")
             return False
     
+    def _login_with_google(self) -> bool:
+        """Se connecte via Google."""
+        try:
+            logger.info("Connexion à X via Google...")
+            
+            # Chercher le bouton "Sign in with Google"
+            google_btn_selectors = [
+                'button:has-text("Sign in with Google")',
+                'button:has-text("Se connecter avec Google")',
+                'div[data-provider="google"]',
+                '[aria-label="Sign in with Google"]',
+            ]
+            
+            for selector in google_btn_selectors:
+                try:
+                    btn = self.page.locator(selector).first
+                    if btn.is_visible(timeout=3000):
+                        btn.click()
+                        break
+                except:
+                    continue
+            
+            self._random_delay(3, 5)
+            
+            # Une nouvelle fenêtre/popup Google s'ouvre
+            # Attendre et basculer vers elle
+            with self.page.context.expect_page() as new_page_info:
+                pass  # Le clic a déjà été fait
+            
+            google_page = new_page_info.value
+            google_page.wait_for_load_state('domcontentloaded')
+            
+            # Entrer l'email Google
+            email_field = google_page.locator('input[type="email"]')
+            email_field.fill(self.google_email)
+            google_page.locator('button:has-text("Next"), button:has-text("Suivant")').click()
+            
+            self._random_delay(2, 3)
+            
+            # Entrer le mot de passe
+            password_field = google_page.locator('input[type="password"]')
+            password_field.wait_for(state='visible', timeout=10000)
+            password_field.fill(self.google_password)
+            google_page.locator('button:has-text("Next"), button:has-text("Suivant")').click()
+            
+            # Attendre la redirection vers X
+            self._random_delay(5, 8)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erreur connexion Google: {e}")
+            return False
+    
     def _login(self) -> bool:
         """Se connecte à X (Twitter)."""
         try:
             logger.info("Connexion à X (Twitter)...")
             
             # Aller sur la page de login
-            self.page.goto(self.LOGIN_URL)
-            self.page.wait_for_load_state('networkidle')
+            self.page.goto(self.LOGIN_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(3, 5)
             
+            # Gérer les cookies
+            self._handle_cookie_popup()
+            
+            # Option: Connexion via Google
+            if self.use_google_login and self.google_email:
+                if self._login_with_google():
+                    return self._check_logged_in()
+            
+            # Connexion classique
             # Étape 1: Entrer le nom d'utilisateur
             username_selectors = [
                 'input[autocomplete="username"]',
@@ -109,64 +197,57 @@ class TwitterPoster(BasePoster):
             if not username_field:
                 raise Exception("Champ nom d'utilisateur non trouvé")
             
-            username_field.click()
+            username_field.click(force=True)
             self._random_delay(0.3, 0.5)
-            username_field.type(self.username, delay=50)
+            username_field.fill(self.username)
             
             self._random_delay(1, 2)
             
             # Cliquer sur "Suivant"
-            next_button = self.page.locator('button:has-text("Next"), button:has-text("Suivant"), div[role="button"]:has-text("Next")').first
-            next_button.click()
+            next_btn = self.page.locator('button:has-text("Next"), button:has-text("Suivant")').first
+            next_btn.click(force=True)
             
             self._random_delay(2, 3)
             
-            # Vérifier s'il y a une vérification supplémentaire (email ou téléphone)
-            unusual_activity = self.page.locator('text="unusual login activity"')
-            if unusual_activity.is_visible(timeout=2000):
-                logger.warning("⚠️ X demande une vérification supplémentaire")
+            # Vérifier s'il y a une vérification supplémentaire
+            try:
                 verification_field = self.page.locator('input[data-testid="ocfEnterTextTextInput"]').first
-                if verification_field.is_visible():
-                    email = os.getenv('TWITTER_EMAIL', self.username)
-                    verification_field.type(email, delay=50)
+                if verification_field.is_visible(timeout=3000):
+                    logger.info("Vérification supplémentaire demandée")
+                    # Entrer l'email ou le username
+                    verification_field.fill(self.username)
                     self._random_delay(1, 2)
-                    next_button = self.page.locator('button:has-text("Next")').first
-                    next_button.click()
+                    self.page.locator('button:has-text("Next")').first.click(force=True)
                     self._random_delay(2, 3)
+            except:
+                pass
             
             # Étape 2: Entrer le mot de passe
             password_field = self.page.locator('input[type="password"]').first
+            password_field.wait_for(state='visible', timeout=15000)
             
-            if not password_field.is_visible(timeout=10000):
-                raise Exception("Champ mot de passe non trouvé")
-            
-            password_field.click()
+            password_field.click(force=True)
             self._random_delay(0.3, 0.5)
-            password_field.type(self.password, delay=50)
+            password_field.fill(self.password)
             
             self._random_delay(1, 2)
             
             # Cliquer sur "Se connecter"
-            login_button = self.page.locator('button[data-testid="LoginForm_Login_Button"], button:has-text("Log in"), button:has-text("Se connecter")').first
-            login_button.click()
+            login_btn = self.page.locator('button[data-testid="LoginForm_Login_Button"], button:has-text("Log in"), button:has-text("Se connecter")').first
+            login_btn.click(force=True)
             
             # Attendre la redirection
             self._random_delay(5, 8)
-            self.page.wait_for_load_state('networkidle')
             
             # Gérer les vérifications de sécurité
             current_url = self.page.url.lower()
-            if 'challenge' in current_url or 'verify' in current_url or 'suspicious' in current_url:
+            if 'challenge' in current_url or 'verify' in current_url:
                 logger.warning("⚠️ Vérification de sécurité X détectée!")
-                logger.warning("Connectez-vous manuellement d'abord pour valider l'appareil.")
                 self._take_screenshot("security_challenge")
                 return False
             
-            # Fermer les popups post-login
+            # Fermer les popups
             self._dismiss_popups()
-            
-            # Vérifier le succès
-            self._random_delay(2, 3)
             
             if self._check_logged_in():
                 logger.info("✅ Connexion X réussie")
@@ -185,39 +266,34 @@ class TwitterPoster(BasePoster):
         try:
             logger.info("Publication sur X (Twitter)...")
             
-            # Tronquer le texte si nécessaire (280 caractères)
+            # Tronquer le texte si nécessaire
             original_length = len(text)
             text = PostContent.truncate_for_twitter(text, 280)
             if len(text) < original_length:
                 logger.info(f"Texte tronqué de {original_length} à {len(text)} caractères")
             
-            # Aller sur la page de composition ou l'accueil
-            self.page.goto(self.HOME_URL)
-            self.page.wait_for_load_state('networkidle')
+            # Aller sur l'accueil
+            self.page.goto(self.HOME_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
             
-            # Fermer les popups
             self._dismiss_popups()
             
-            # Chercher le champ de texte sur l'accueil ou cliquer sur le bouton "Post"
+            # Trouver le champ de texte
             tweet_box = self.page.locator('[data-testid="tweetTextarea_0"]').first
             
             if not tweet_box.is_visible(timeout=5000):
                 # Cliquer sur le bouton de nouveau tweet
-                new_tweet_btn = self.page.locator('[data-testid="SideNav_NewTweet_Button"], a[href="/compose/tweet"]').first
+                new_tweet_btn = self.page.locator('[data-testid="SideNav_NewTweet_Button"]').first
                 if new_tweet_btn.is_visible():
-                    new_tweet_btn.click()
+                    new_tweet_btn.click(force=True)
                     self._random_delay(2, 3)
                     tweet_box = self.page.locator('[data-testid="tweetTextarea_0"]').first
             
             if not tweet_box.is_visible(timeout=5000):
                 raise Exception("Zone de texte non trouvée")
             
-            # Cliquer sur la zone de texte et taper
-            tweet_box.click()
+            tweet_box.click(force=True)
             self._random_delay(0.5, 1)
-            
-            # Taper le texte caractère par caractère
             tweet_box.type(text, delay=30)
             
             self._random_delay(1, 2)
@@ -226,82 +302,26 @@ class TwitterPoster(BasePoster):
             if image_path and Path(image_path).exists():
                 logger.info(f"Ajout de l'image: {image_path}")
                 
-                # Chercher le bouton média
-                media_btn = self.page.locator('[data-testid="fileInput"]').first
-                
-                if media_btn.count() == 0:
-                    media_btn = self.page.locator('input[type="file"][accept*="image"]').first
-                
-                if media_btn.count() == 0:
-                    media_btn = self.page.locator('input[type="file"]').first
-                
-                if media_btn.count() > 0:
-                    media_btn.set_input_files(image_path)
-                    
-                    # Attendre le chargement de l'image
-                    self._random_delay(3, 5)
-                    
-                    try:
-                        self.page.wait_for_selector('[data-testid="attachments"]', timeout=10000)
-                        logger.info("Image ajoutée avec succès")
-                    except:
-                        logger.warning("Image peut-être non chargée correctement")
-                else:
-                    logger.warning("Input file non trouvé, publication sans image")
-            
-            # Ajouter une vidéo si fournie
-            elif video_path and Path(video_path).exists():
-                logger.info(f"Ajout de la vidéo: {video_path}")
-                
                 try:
                     file_input = self.page.locator('input[type="file"]').first
-                    file_input.set_input_files(video_path)
-                    
-                    # Les vidéos prennent plus de temps à charger
-                    self._random_delay(5, 10)
-                    
-                    # Attendre le traitement de la vidéo
-                    self.page.wait_for_selector('[data-testid="attachments"]', timeout=60000)
-                    
-                    logger.info("Vidéo ajoutée avec succès")
+                    if file_input.count() > 0:
+                        file_input.set_input_files(image_path)
+                        self._random_delay(3, 5)
+                        logger.info("Image ajoutée")
                 except Exception as e:
-                    logger.warning(f"Échec ajout vidéo: {e}")
+                    logger.warning(f"Échec ajout image: {e}")
             
             self._random_delay(2, 3)
             
-            # Cliquer sur le bouton "Post" / "Poster"
-            post_button_selectors = [
-                '[data-testid="tweetButtonInline"]',
-                '[data-testid="tweetButton"]',
-                'button[data-testid="tweetButtonInline"]',
-                'div[data-testid="tweetButtonInline"]',
-            ]
+            # Cliquer sur "Post"
+            post_btn = self.page.locator('[data-testid="tweetButtonInline"], [data-testid="tweetButton"]').first
             
-            posted = False
-            for selector in post_button_selectors:
-                try:
-                    btn = self.page.locator(selector).first
-                    if btn.is_visible(timeout=3000):
-                        # Vérifier que le bouton est activé
-                        if btn.is_enabled():
-                            btn.click()
-                            posted = True
-                            break
-                except:
-                    continue
-            
-            if not posted:
+            if post_btn.is_visible() and post_btn.is_enabled():
+                post_btn.click(force=True)
+            else:
                 raise Exception("Bouton Post non trouvé ou désactivé")
             
-            # Attendre la publication
             self._random_delay(3, 5)
-            
-            # Vérifier le succès (le champ de texte se vide)
-            try:
-                self.page.wait_for_selector('[data-testid="toast"]', timeout=5000)
-                logger.info("Toast de confirmation détecté")
-            except:
-                pass
             
             self._take_screenshot("published")
             logger.info("✅ Publication X terminée")

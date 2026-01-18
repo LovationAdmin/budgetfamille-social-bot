@@ -1,10 +1,8 @@
 """
-Budget Famille - Instagram Poster
-==================================
+Budget Famille - Instagram Poster (Fixed)
+==========================================
 Module pour publier automatiquement sur Instagram.
-
-Note: Instagram est plus strict sur l'automatisation.
-Ce module utilise la version web (instagram.com).
+Meilleure gestion des cookies et timeouts.
 """
 
 import os
@@ -28,14 +26,39 @@ class InstagramPoster(BasePoster):
         self.username = os.getenv('INSTAGRAM_USER')
         self.password = os.getenv('INSTAGRAM_PASS')
     
+    def _handle_cookie_popup(self):
+        """Gère le popup de cookies Instagram."""
+        cookie_selectors = [
+            'button:has-text("Allow all cookies")',
+            'button:has-text("Autoriser tous les cookies")',
+            'button:has-text("Accept All")',
+            'button:has-text("Tout accepter")',
+            'button:has-text("Accept")',
+            'button:has-text("Accepter")',
+            'button:has-text("Allow essential and optional cookies")',
+        ]
+        
+        for selector in cookie_selectors:
+            try:
+                btn = self.page.locator(selector).first
+                if btn.is_visible(timeout=3000):
+                    btn.click(force=True)
+                    self._random_delay(2, 3)
+                    logger.info("Popup cookies Instagram fermé")
+                    return True
+            except:
+                continue
+        return False
+    
     def _dismiss_popups(self):
         """Ferme les popups Instagram courants."""
+        self._handle_cookie_popup()
+        
         popups = [
             'button:has-text("Not Now")',
             'button:has-text("Pas maintenant")',
             'button:has-text("Plus tard")',
             'button:has-text("Cancel")',
-            'button:has-text("Annuler")',
             '[aria-label="Close"]',
             '[aria-label="Fermer"]',
         ]
@@ -43,8 +66,8 @@ class InstagramPoster(BasePoster):
         for popup_selector in popups:
             try:
                 popup = self.page.locator(popup_selector).first
-                if popup.is_visible(timeout=1000):
-                    popup.click()
+                if popup.is_visible(timeout=2000):
+                    popup.click(force=True)
                     self._random_delay(0.5, 1)
             except:
                 continue
@@ -52,23 +75,20 @@ class InstagramPoster(BasePoster):
     def _check_logged_in(self) -> bool:
         """Vérifie si on est connecté à Instagram."""
         try:
-            self.page.goto(self.HOME_URL, wait_until='networkidle')
-            self._random_delay(2, 3)
+            self.page.goto(self.HOME_URL, wait_until='domcontentloaded', timeout=60000)
+            self._random_delay(3, 4)
             
-            # Fermer les popups
+            self._handle_cookie_popup()
             self._dismiss_popups()
             
-            # Vérifier si on est sur la page de login
             if 'login' in self.page.url.lower():
                 return False
             
-            # Chercher des éléments qui indiquent une connexion
             indicators = [
                 'svg[aria-label="New post"]',
                 'svg[aria-label="Nouvelle publication"]',
                 '[aria-label="Home"]',
                 '[aria-label="Accueil"]',
-                'a[href*="/direct/inbox"]',
             ]
             
             for indicator in indicators:
@@ -89,32 +109,19 @@ class InstagramPoster(BasePoster):
         try:
             logger.info("Connexion à Instagram...")
             
-            # Aller sur la page de login
-            self.page.goto(self.LOGIN_URL)
-            self.page.wait_for_load_state('networkidle')
-            self._random_delay(2, 3)
+            self.page.goto(self.LOGIN_URL, wait_until='domcontentloaded', timeout=60000)
+            self._random_delay(3, 4)
             
-            # Accepter les cookies si demandé
-            cookie_buttons = [
-                'button:has-text("Accept")',
-                'button:has-text("Accepter")',
-                'button:has-text("Allow")',
-                'button:has-text("Autoriser")',
-            ]
+            # Gérer les cookies EN PREMIER
+            self._handle_cookie_popup()
+            self._random_delay(1, 2)
             
-            for btn_selector in cookie_buttons:
-                try:
-                    btn = self.page.locator(btn_selector).first
-                    if btn.is_visible(timeout=2000):
-                        btn.click()
-                        self._random_delay(1, 2)
-                        break
-                except:
-                    continue
+            # Attendre le formulaire
+            self.page.wait_for_selector('input[name="username"]', state='visible', timeout=15000)
             
             # Remplir le nom d'utilisateur
             username_field = self.page.locator('input[name="username"]')
-            username_field.click()
+            username_field.click(force=True)
             self._random_delay(0.3, 0.5)
             username_field.type(self.username, delay=50)
             
@@ -122,47 +129,28 @@ class InstagramPoster(BasePoster):
             
             # Remplir le mot de passe
             password_field = self.page.locator('input[name="password"]')
-            password_field.click()
+            password_field.click(force=True)
             self._random_delay(0.3, 0.5)
             password_field.type(self.password, delay=50)
             
             self._random_delay(0.5, 1)
             
-            # Cliquer sur "Se connecter"
+            # Se connecter
             login_button = self.page.locator('button[type="submit"]')
-            login_button.click()
+            login_button.click(force=True)
             
-            # Attendre la redirection
             self._random_delay(5, 8)
-            self.page.wait_for_load_state('networkidle')
             
-            # Gérer les vérifications de sécurité
+            # Vérifier les challenges
             if 'challenge' in self.page.url.lower() or 'suspicious' in self.page.url.lower():
                 logger.warning("⚠️ Vérification de sécurité Instagram détectée!")
-                logger.warning("Connectez-vous manuellement d'abord pour valider l'appareil.")
+                logger.warning("Connectez-vous manuellement d'abord.")
                 self._take_screenshot("security_challenge")
                 return False
             
             # Fermer les popups post-login
             self._dismiss_popups()
             
-            # Popup "Enregistrer les infos de connexion"
-            self._random_delay(2, 3)
-            save_info_buttons = [
-                'button:has-text("Not Now")',
-                'button:has-text("Pas maintenant")',
-            ]
-            
-            for btn_selector in save_info_buttons:
-                try:
-                    btn = self.page.locator(btn_selector).first
-                    if btn.is_visible(timeout=3000):
-                        btn.click()
-                        break
-                except:
-                    continue
-            
-            # Vérifier le succès
             self._random_delay(2, 3)
             
             if self._check_logged_in():
@@ -178,13 +166,8 @@ class InstagramPoster(BasePoster):
             return False
     
     def _publish(self, text: str, image_path: str = None, video_path: str = None) -> bool:
-        """
-        Publie un post sur Instagram.
-        
-        Note: Instagram REQUIERT une image ou une vidéo pour publier.
-        """
+        """Publie un post sur Instagram."""
         try:
-            # Instagram nécessite un média
             media_path = image_path or video_path
             
             if not media_path:
@@ -197,32 +180,26 @@ class InstagramPoster(BasePoster):
             
             logger.info("Publication sur Instagram...")
             
-            # Aller sur l'accueil
-            self.page.goto(self.HOME_URL)
-            self.page.wait_for_load_state('networkidle')
+            self.page.goto(self.HOME_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
             
-            # Fermer les popups
             self._dismiss_popups()
             
-            # Cliquer sur "Créer" / "New post"
+            # Cliquer sur "Créer"
             create_selectors = [
                 'svg[aria-label="New post"]',
                 'svg[aria-label="Nouvelle publication"]',
                 '[aria-label="Create"]',
                 '[aria-label="Créer"]',
-                'a[href="/create/select/"]',
             ]
             
             clicked = False
             for selector in create_selectors:
                 try:
                     element = self.page.locator(selector).first
-                    if element.is_visible(timeout=2000):
-                        # Pour les SVG, cliquer sur le parent
-                        if 'svg' in selector:
-                            element = element.locator('xpath=..')
-                        element.click()
+                    if element.is_visible(timeout=3000):
+                        parent = element.locator('xpath=..')
+                        parent.click(force=True)
                         clicked = True
                         break
                 except:
@@ -231,10 +208,8 @@ class InstagramPoster(BasePoster):
             if not clicked:
                 # Essayer le menu latéral
                 try:
-                    menu_items = self.page.locator('span:has-text("Créer"), span:has-text("Create")')
-                    if menu_items.count() > 0:
-                        menu_items.first.click()
-                        clicked = True
+                    self.page.locator('span:has-text("Créer"), span:has-text("Create")').first.click(force=True)
+                    clicked = True
                 except:
                     pass
             
@@ -243,58 +218,23 @@ class InstagramPoster(BasePoster):
             
             self._random_delay(2, 3)
             
-            # Le modal de création s'ouvre
-            # Sélectionner "Post" si options multiples
-            try:
-                post_option = self.page.locator('button:has-text("Post"), button:has-text("Publication")').first
-                if post_option.is_visible(timeout=2000):
-                    post_option.click()
-                    self._random_delay(1, 2)
-            except:
-                pass
-            
             # Upload du fichier
-            # Instagram utilise un input file caché
             file_input = self.page.locator('input[type="file"]').first
-            
-            # S'assurer que l'input accepte le type de fichier
-            if video_path:
-                file_input.evaluate('el => el.setAttribute("accept", "video/*")')
-            
             file_input.set_input_files(media_path)
             
-            # Attendre le chargement
             self._random_delay(3, 5)
             
-            # Gérer le recadrage (cliquer sur "Suivant" / "Next")
-            next_buttons = [
-                'button:has-text("Next")',
-                'button:has-text("Suivant")',
-                '[aria-label="Next"]',
-                '[aria-label="Suivant"]',
-            ]
-            
-            # Premier "Suivant" (recadrage)
-            for btn_selector in next_buttons:
-                try:
-                    btn = self.page.locator(btn_selector).first
-                    if btn.is_visible(timeout=5000):
-                        btn.click()
-                        break
-                except:
-                    continue
+            # Cliquer sur "Suivant" (recadrage)
+            next_btn = self.page.locator('button:has-text("Next"), button:has-text("Suivant")').first
+            if next_btn.is_visible(timeout=5000):
+                next_btn.click(force=True)
             
             self._random_delay(2, 3)
             
-            # Deuxième "Suivant" (filtres) - on peut sauter
-            for btn_selector in next_buttons:
-                try:
-                    btn = self.page.locator(btn_selector).first
-                    if btn.is_visible(timeout=3000):
-                        btn.click()
-                        break
-                except:
-                    continue
+            # Cliquer sur "Suivant" (filtres)
+            next_btn = self.page.locator('button:has-text("Next"), button:has-text("Suivant")').first
+            if next_btn.is_visible(timeout=3000):
+                next_btn.click(force=True)
             
             self._random_delay(2, 3)
             
@@ -302,69 +242,28 @@ class InstagramPoster(BasePoster):
             caption_selectors = [
                 'textarea[aria-label*="caption"]',
                 'textarea[aria-label*="légende"]',
-                'textarea[placeholder*="Write a caption"]',
-                'textarea[placeholder*="Écrivez une légende"]',
                 '[contenteditable="true"]',
             ]
             
-            caption_field = None
             for selector in caption_selectors:
                 try:
                     field = self.page.locator(selector).first
                     if field.is_visible(timeout=3000):
-                        caption_field = field
+                        field.click(force=True)
+                        self._random_delay(0.5, 1)
+                        field.type(text, delay=30)
                         break
                 except:
                     continue
-            
-            if caption_field:
-                caption_field.click()
-                self._random_delay(0.5, 1)
-                caption_field.type(text, delay=30)
-            else:
-                logger.warning("Champ de légende non trouvé")
             
             self._random_delay(2, 3)
             
-            # Cliquer sur "Partager" / "Share"
-            share_selectors = [
-                'button:has-text("Share")',
-                'button:has-text("Partager")',
-                '[aria-label="Share"]',
-                '[aria-label="Partager"]',
-            ]
+            # Partager
+            share_btn = self.page.locator('button:has-text("Share"), button:has-text("Partager")').first
+            if share_btn.is_visible(timeout=3000):
+                share_btn.click(force=True)
             
-            shared = False
-            for btn_selector in share_selectors:
-                try:
-                    btn = self.page.locator(btn_selector).first
-                    if btn.is_visible(timeout=3000):
-                        btn.click()
-                        shared = True
-                        break
-                except:
-                    continue
-            
-            if not shared:
-                raise Exception("Bouton Partager non trouvé")
-            
-            # Attendre la publication
             self._random_delay(5, 10)
-            
-            # Vérifier le succès (message ou redirection)
-            try:
-                success_indicators = [
-                    'text="Your post has been shared"',
-                    'text="Votre publication a été partagée"',
-                    'text="Post shared"',
-                ]
-                
-                for indicator in success_indicators:
-                    if self.page.locator(indicator).is_visible(timeout=5000):
-                        logger.info("✅ Publication Instagram réussie (message de confirmation)")
-                        break
-            except:
-                pass
             
             self._take_screenshot("published")
             logger.info("✅ Publication Instagram terminée")

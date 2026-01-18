@@ -1,7 +1,7 @@
 """
-Budget Famille - Base Poster
-=============================
-Classe de base pour tous les posters de réseaux sociaux.
+Budget Famille - Base Poster (Fixed v3)
+========================================
+Utilise le profil Chrome existant de l'utilisateur pour éviter les blocages de sécurité.
 """
 
 import os
@@ -15,187 +15,186 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def get_chrome_path():
+    """Trouve le chemin de Chrome selon l'OS."""
+    import platform
+    system = platform.system()
+    
+    if system == "Windows":
+        paths = [
+            os.path.expandvars(r"%ProgramFiles%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%ProgramFiles(x86)%\Google\Chrome\Application\chrome.exe"),
+            os.path.expandvars(r"%LocalAppData%\Google\Chrome\Application\chrome.exe"),
+        ]
+    elif system == "Darwin":  # macOS
+        paths = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+        ]
+    else:  # Linux
+        paths = [
+            "/usr/bin/google-chrome",
+            "/usr/bin/google-chrome-stable",
+            "/usr/bin/chromium-browser",
+        ]
+    
+    for path in paths:
+        if os.path.exists(path):
+            return path
+    
+    return None
+
+
+def get_chrome_user_data_dir():
+    """Trouve le dossier User Data de Chrome."""
+    import platform
+    system = platform.system()
+    
+    if system == "Windows":
+        return os.path.expandvars(r"%LocalAppData%\Google\Chrome\User Data")
+    elif system == "Darwin":  # macOS
+        return os.path.expanduser("~/Library/Application Support/Google/Chrome")
+    else:  # Linux
+        return os.path.expanduser("~/.config/google-chrome")
+
+
 class BasePoster(ABC):
     """
-    Classe de base abstraite pour les posters de réseaux sociaux.
-    Fournit les fonctionnalités communes et définit l'interface.
+    Classe de base pour les posters de réseaux sociaux.
+    Utilise le profil Chrome existant pour réutiliser les sessions.
     """
     
     PLATFORM_NAME = "base"
     LOGIN_URL = ""
     
     def __init__(self, headless: bool = True):
-        """
-        Initialise le poster.
-        
-        Args:
-            headless: Si True, le navigateur est invisible
-        """
         self.headless = headless
         self.browser = None
         self.page = None
         self.playwright = None
+        self.context = None
         
-        # Dossier pour les screenshots de debug
+        # Dossier pour les screenshots
         self.screenshots_dir = Path('screenshots')
         self.screenshots_dir.mkdir(exist_ok=True)
         
-        # State file pour la persistence de session
-        self.state_file = Path(f'browser_data/{self.PLATFORM_NAME}_state.json')
-        self.state_file.parent.mkdir(exist_ok=True)
+        # Utiliser le profil Chrome existant ?
+        self.use_existing_chrome = os.getenv('USE_EXISTING_CHROME', 'true').lower() == 'true'
     
     def _random_delay(self, min_sec: float = 1.0, max_sec: float = 3.0):
-        """Ajoute un délai aléatoire pour simuler un comportement humain."""
+        """Délai aléatoire pour simuler un comportement humain."""
         delay = random.uniform(min_sec, max_sec)
         time.sleep(delay)
     
-    def _human_type(self, page: Page, selector: str, text: str):
-        """
-        Tape du texte avec une vitesse humaine.
-        
-        Args:
-            page: Page Playwright
-            selector: Sélecteur CSS de l'élément
-            text: Texte à taper
-        """
-        element = page.locator(selector)
-        element.click()
-        
-        for char in text:
-            element.type(char, delay=random.randint(30, 100))
-            
-            # Pause occasionnelle
-            if random.random() < 0.1:
-                time.sleep(random.uniform(0.1, 0.3))
-    
     def _take_screenshot(self, name: str):
-        """Prend une capture d'écran pour le debug."""
+        """Capture d'écran pour debug."""
         if self.page:
             timestamp = time.strftime("%Y%m%d-%H%M%S")
             filename = self.screenshots_dir / f"{self.PLATFORM_NAME}_{name}_{timestamp}.png"
-            self.page.screenshot(path=str(filename))
-            logger.debug(f"Screenshot saved: {filename}")
+            try:
+                self.page.screenshot(path=str(filename))
+                logger.debug(f"Screenshot: {filename}")
+            except:
+                pass
     
     def _start_browser(self):
-        """Démarre le navigateur avec les paramètres appropriés."""
+        """Démarre le navigateur en utilisant le profil Chrome existant."""
         self.playwright = sync_playwright().start()
         
-        # Options du navigateur pour éviter la détection
-        browser_args = [
-            '--disable-blink-features=AutomationControlled',
-            '--disable-dev-shm-usage',
-            '--no-sandbox',
-            '--disable-setuid-sandbox',
-            '--disable-infobars',
-            '--window-size=1920,1080',
-            '--start-maximized',
-        ]
+        chrome_path = get_chrome_path()
+        user_data_dir = get_chrome_user_data_dir()
         
-        # Lancer le navigateur
+        if self.use_existing_chrome and chrome_path and os.path.exists(user_data_dir):
+            logger.info("🔓 Utilisation du profil Chrome existant (sessions sauvegardées)")
+            
+            # IMPORTANT: Ferme Chrome avant de lancer le bot !
+            # Playwright ne peut pas utiliser un profil déjà ouvert
+            
+            try:
+                # Lancer Chrome avec le profil utilisateur existant
+                self.context = self.playwright.chromium.launch_persistent_context(
+                    user_data_dir=user_data_dir,
+                    channel="chrome",  # Utilise Chrome installé, pas Chromium
+                    headless=self.headless,
+                    args=[
+                        '--disable-blink-features=AutomationControlled',
+                        '--no-sandbox',
+                        '--disable-dev-shm-usage',
+                    ],
+                    viewport={'width': 1920, 'height': 1080},
+                    locale='fr-FR',
+                    timezone_id='Europe/Paris',
+                )
+                
+                # Utiliser la première page ou en créer une
+                if self.context.pages:
+                    self.page = self.context.pages[0]
+                else:
+                    self.page = self.context.new_page()
+                
+                logger.info("✅ Chrome lancé avec ton profil existant")
+                
+            except Exception as e:
+                logger.warning(f"⚠️ Impossible d'utiliser le profil Chrome: {e}")
+                logger.info("Fallback vers navigateur isolé...")
+                self._start_isolated_browser()
+        else:
+            logger.info("Utilisation d'un navigateur isolé")
+            self._start_isolated_browser()
+        
+        self.page.set_default_timeout(60000)  # 60 secondes timeout
+    
+    def _start_isolated_browser(self):
+        """Démarre un navigateur isolé (sans profil existant)."""
         self.browser = self.playwright.chromium.launch(
             headless=self.headless,
-            args=browser_args
+            args=[
+                '--disable-blink-features=AutomationControlled',
+                '--no-sandbox',
+            ]
         )
         
-        # Créer un contexte avec un user agent réaliste
-        context_options = {
-            'viewport': {'width': 1920, 'height': 1080},
-            'user_agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'locale': 'fr-FR',
-            'timezone_id': 'Europe/Paris',
-        }
+        self.context = self.browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            locale='fr-FR',
+            timezone_id='Europe/Paris',
+        )
         
-        # Charger l'état de session si disponible
-        if self.state_file.exists():
-            context_options['storage_state'] = str(self.state_file)
-            logger.info(f"Session chargée depuis {self.state_file}")
-        
-        context = self.browser.new_context(**context_options)
-        
-        # Masquer les signes d'automatisation
-        context.add_init_script("""
-            Object.defineProperty(navigator, 'webdriver', {
-                get: () => undefined
-            });
-            
-            Object.defineProperty(navigator, 'plugins', {
-                get: () => [1, 2, 3, 4, 5]
-            });
-            
-            Object.defineProperty(navigator, 'languages', {
-                get: () => ['fr-FR', 'fr', 'en']
-            });
+        # Masquer l'automatisation
+        self.context.add_init_script("""
+            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
         """)
         
-        self.page = context.new_page()
-        
-        # Timeout par défaut
-        self.page.set_default_timeout(30000)
-        
-        logger.info(f"Navigateur démarré (headless={self.headless})")
-    
-    def _save_session(self):
-        """Sauvegarde l'état de session pour éviter de se reconnecter."""
-        if self.page:
-            self.page.context.storage_state(path=str(self.state_file))
-            logger.info(f"Session sauvegardée dans {self.state_file}")
+        self.page = self.context.new_page()
     
     def _close_browser(self):
         """Ferme proprement le navigateur."""
         try:
+            if self.context:
+                self.context.close()
             if self.browser:
                 self.browser.close()
             if self.playwright:
                 self.playwright.stop()
         except Exception as e:
-            logger.error(f"Erreur lors de la fermeture: {e}")
+            logger.error(f"Erreur fermeture: {e}")
     
     def _check_logged_in(self) -> bool:
-        """
-        Vérifie si on est déjà connecté.
-        À implémenter dans chaque sous-classe.
-        """
+        """Vérifie si connecté. À implémenter."""
         return False
     
     @abstractmethod
     def _login(self) -> bool:
-        """
-        Se connecte à la plateforme.
-        À implémenter dans chaque sous-classe.
-        
-        Returns:
-            True si la connexion a réussi
-        """
+        """Se connecte. À implémenter."""
         pass
     
     @abstractmethod
     def _publish(self, text: str, image_path: str = None, video_path: str = None) -> bool:
-        """
-        Publie le contenu sur la plateforme.
-        À implémenter dans chaque sous-classe.
-        
-        Args:
-            text: Texte du post
-            image_path: Chemin vers l'image (optionnel)
-            video_path: Chemin vers la vidéo (optionnel)
-            
-        Returns:
-            True si la publication a réussi
-        """
+        """Publie. À implémenter."""
         pass
     
     def post(self, text: str, image_path: str = None, video_path: str = None) -> dict:
-        """
-        Méthode principale pour publier un post.
-        
-        Args:
-            text: Texte du post
-            image_path: Chemin vers l'image (optionnel)
-            video_path: Chemin vers la vidéo (optionnel)
-            
-        Returns:
-            Dictionnaire avec le résultat de la publication
-        """
+        """Méthode principale pour publier."""
         result = {
             'success': False,
             'platform': self.PLATFORM_NAME,
@@ -204,26 +203,23 @@ class BasePoster(ABC):
         }
         
         try:
-            logger.info(f"Démarrage de la publication sur {self.PLATFORM_NAME}")
+            logger.info(f"Démarrage publication sur {self.PLATFORM_NAME}")
             
-            # Démarrer le navigateur
             self._start_browser()
             
-            # Vérifier si déjà connecté
-            self.page.goto(self.LOGIN_URL)
+            # Aller sur la page
+            self.page.goto(self.LOGIN_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 4)
             
+            # Vérifier si déjà connecté (grâce au profil Chrome)
             if not self._check_logged_in():
                 logger.info("Connexion requise...")
                 if not self._login():
                     raise Exception("Échec de la connexion")
-                
-                # Sauvegarder la session
-                self._save_session()
             else:
-                logger.info("Déjà connecté (session sauvegardée)")
+                logger.info("✅ Déjà connecté (session Chrome existante)")
             
-            # Publier le contenu
+            # Publier
             self._random_delay(2, 4)
             
             if not self._publish(text, image_path, video_path):
@@ -233,11 +229,8 @@ class BasePoster(ABC):
             logger.info(f"✅ Publication réussie sur {self.PLATFORM_NAME}")
             
         except Exception as e:
-            error_msg = str(e)
-            result['error'] = error_msg
-            logger.error(f"❌ Erreur sur {self.PLATFORM_NAME}: {error_msg}")
-            
-            # Screenshot d'erreur
+            result['error'] = str(e)
+            logger.error(f"❌ Erreur sur {self.PLATFORM_NAME}: {e}")
             self._take_screenshot("error")
             
         finally:
@@ -247,27 +240,10 @@ class BasePoster(ABC):
 
 
 class PostContent:
-    """Classe utilitaire pour formater le contenu des posts."""
+    """Utilitaire pour formater le contenu."""
     
     @staticmethod
     def truncate_for_twitter(text: str, max_length: int = 280) -> str:
-        """Tronque le texte pour X/Twitter."""
         if len(text) <= max_length:
             return text
         return text[:max_length-3] + "..."
-    
-    @staticmethod
-    def add_line_breaks(text: str, platform: str) -> str:
-        """Ajoute des sauts de ligne appropriés selon la plateforme."""
-        # LinkedIn et Facebook supportent les sauts de ligne
-        # Instagram et Twitter préfèrent moins de sauts de ligne
-        if platform in ['instagram', 'twitter']:
-            # Remplacer les doubles sauts par des simples
-            text = text.replace('\n\n', '\n')
-        return text
-    
-    @staticmethod
-    def extract_hashtags(text: str) -> list:
-        """Extrait les hashtags du texte."""
-        import re
-        return re.findall(r'#\w+', text)

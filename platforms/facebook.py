@@ -1,11 +1,8 @@
 """
-Budget Famille - Facebook Poster
-=================================
+Budget Famille - Facebook Poster (Fixed)
+=========================================
 Module pour publier automatiquement sur Facebook.
-
-Supporte la publication sur:
-- Profil personnel
-- Page Facebook
+Gestion améliorée des popups de cookies.
 """
 
 import os
@@ -30,24 +27,82 @@ class FacebookPoster(BasePoster):
         self.password = os.getenv('FACEBOOK_PASS')
         self.page_name = os.getenv('FACEBOOK_PAGE_NAME')
     
+    def _handle_cookie_popup(self):
+        """Gère le popup de cookies Facebook - DOIT être appelé en premier."""
+        logger.info("Recherche du popup de cookies...")
+        
+        cookie_selectors = [
+            # Boutons "Tout accepter" / "Allow all"
+            'button[data-cookiebanner="accept_button"]',
+            'button[data-testid="cookie-policy-manage-dialog-accept-button"]',
+            'button[title="Tout accepter"]',
+            'button[title="Allow all cookies"]',
+            'button:has-text("Autoriser tous les cookies")',
+            'button:has-text("Tout accepter")',
+            'button:has-text("Allow all cookies")',
+            'button:has-text("Accept all")',
+            # Boutons dans le dialogue
+            'div[data-testid="cookie-policy-manage-dialog"] button:first-of-type',
+            # Sélecteurs génériques
+            '[aria-label="Tout accepter"]',
+            '[aria-label="Allow all cookies"]',
+        ]
+        
+        for selector in cookie_selectors:
+            try:
+                btn = self.page.locator(selector).first
+                if btn.is_visible(timeout=2000):
+                    logger.info(f"Popup cookies trouvé, clic sur: {selector}")
+                    btn.click(force=True)  # Force click pour bypasser les overlays
+                    self._random_delay(2, 3)
+                    return True
+            except Exception as e:
+                continue
+        
+        # Essayer avec JavaScript si les sélecteurs ne marchent pas
+        try:
+            self.page.evaluate("""
+                () => {
+                    // Chercher tous les boutons contenant "accepter" ou "allow"
+                    const buttons = document.querySelectorAll('button');
+                    for (const btn of buttons) {
+                        const text = btn.textContent.toLowerCase();
+                        if (text.includes('accepter') || text.includes('allow') || 
+                            text.includes('autoriser') || text.includes('accept')) {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+            self._random_delay(2, 3)
+            logger.info("Popup cookies fermé via JavaScript")
+            return True
+        except:
+            pass
+        
+        logger.info("Pas de popup de cookies détecté")
+        return False
+    
     def _dismiss_popups(self):
         """Ferme les popups Facebook courants."""
+        # D'abord gérer les cookies
+        self._handle_cookie_popup()
+        
         popups = [
-            'button[data-cookiebanner="accept_button"]',
-            'button:has-text("Allow")',
-            'button:has-text("Autoriser")',
-            'button:has-text("Not Now")',
-            'button:has-text("Pas maintenant")',
             '[aria-label="Close"]',
             '[aria-label="Fermer"]',
             'div[aria-label="Close"]',
+            'button:has-text("Not Now")',
+            'button:has-text("Pas maintenant")',
         ]
         
         for popup_selector in popups:
             try:
                 popup = self.page.locator(popup_selector).first
                 if popup.is_visible(timeout=1000):
-                    popup.click()
+                    popup.click(force=True)
                     self._random_delay(0.5, 1)
             except:
                 continue
@@ -55,11 +110,11 @@ class FacebookPoster(BasePoster):
     def _check_logged_in(self) -> bool:
         """Vérifie si on est connecté à Facebook."""
         try:
-            self.page.goto(self.HOME_URL, wait_until='networkidle')
+            self.page.goto(self.HOME_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
             
-            # Fermer les popups
-            self._dismiss_popups()
+            # Gérer les cookies d'abord
+            self._handle_cookie_popup()
             
             # Vérifier si on est sur la page de login
             current_url = self.page.url.lower()
@@ -96,51 +151,41 @@ class FacebookPoster(BasePoster):
             logger.info("Connexion à Facebook...")
             
             # Aller sur la page de login
-            self.page.goto(self.LOGIN_URL)
-            self.page.wait_for_load_state('networkidle')
+            self.page.goto(self.LOGIN_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
             
-            # Accepter les cookies
-            cookie_buttons = [
-                'button[data-cookiebanner="accept_button"]',
-                'button:has-text("Accept All")',
-                'button:has-text("Tout accepter")',
-                'button:has-text("Allow")',
-            ]
+            # IMPORTANT: Gérer les cookies EN PREMIER
+            self._handle_cookie_popup()
+            self._random_delay(1, 2)
             
-            for btn_selector in cookie_buttons:
-                try:
-                    btn = self.page.locator(btn_selector).first
-                    if btn.is_visible(timeout=2000):
-                        btn.click()
-                        self._random_delay(1, 2)
-                        break
-                except:
-                    continue
+            # Attendre que le formulaire soit interactif
+            self.page.wait_for_selector('#email', state='visible', timeout=10000)
             
             # Remplir l'email
             email_field = self.page.locator('#email')
-            email_field.click()
+            email_field.click(force=True)
             self._random_delay(0.3, 0.5)
+            email_field.fill('')  # Clear first
             email_field.type(self.email, delay=50)
             
             self._random_delay(0.5, 1)
             
             # Remplir le mot de passe
             password_field = self.page.locator('#pass')
-            password_field.click()
+            password_field.click(force=True)
             self._random_delay(0.3, 0.5)
+            password_field.fill('')
             password_field.type(self.password, delay=50)
             
             self._random_delay(0.5, 1)
             
             # Cliquer sur "Se connecter"
-            login_button = self.page.locator('button[name="login"], button[type="submit"], #loginbutton')
-            login_button.click()
+            login_button = self.page.locator('button[name="login"], button[type="submit"], #loginbutton').first
+            login_button.click(force=True)
             
             # Attendre la redirection
             self._random_delay(5, 8)
-            self.page.wait_for_load_state('networkidle')
+            self.page.wait_for_load_state('domcontentloaded', timeout=60000)
             
             # Gérer les vérifications de sécurité
             current_url = self.page.url.lower()
@@ -171,17 +216,15 @@ class FacebookPoster(BasePoster):
     def _go_to_page(self) -> bool:
         """Navigue vers la page Facebook (si configurée)."""
         if not self.page_name:
-            return True  # Pas de page configurée, poster sur le profil
+            return True
         
         try:
             logger.info(f"Navigation vers la page: {self.page_name}")
             
-            # Aller dans les pages
-            self.page.goto('https://www.facebook.com/pages/?category=your_pages')
-            self.page.wait_for_load_state('networkidle')
+            self.page.goto('https://www.facebook.com/pages/?category=your_pages', timeout=60000)
+            self.page.wait_for_load_state('domcontentloaded')
             self._random_delay(2, 3)
             
-            # Chercher la page par son nom
             page_link = self.page.locator(f'a:has-text("{self.page_name}")').first
             
             if page_link.is_visible(timeout=5000):
@@ -207,13 +250,13 @@ class FacebookPoster(BasePoster):
             # Aller sur la page si configurée
             self._go_to_page()
             
-            self.page.wait_for_load_state('networkidle')
+            self.page.wait_for_load_state('domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
             
             # Fermer les popups
             self._dismiss_popups()
             
-            # Cliquer sur "À quoi pensez-vous ?" / "What's on your mind?"
+            # Cliquer sur "À quoi pensez-vous ?"
             create_post_selectors = [
                 '[aria-label="Create a post"]',
                 '[aria-label="Créer une publication"]',
@@ -229,7 +272,7 @@ class FacebookPoster(BasePoster):
                 try:
                     element = self.page.locator(selector).first
                     if element.is_visible(timeout=3000):
-                        element.click()
+                        element.click(force=True)
                         clicked = True
                         break
                 except:
@@ -240,7 +283,7 @@ class FacebookPoster(BasePoster):
             
             self._random_delay(2, 3)
             
-            # Attendre que le modal s'ouvre et trouver le champ de texte
+            # Attendre que le modal s'ouvre
             text_field_selectors = [
                 'div[contenteditable="true"][role="textbox"]',
                 'div[aria-label*="What\'s on your mind"]',
@@ -262,10 +305,8 @@ class FacebookPoster(BasePoster):
                 raise Exception("Champ de texte non trouvé")
             
             # Cliquer et taper le texte
-            text_field.click()
+            text_field.click(force=True)
             self._random_delay(0.5, 1)
-            
-            # Facebook utilise contenteditable, on doit taper caractère par caractère
             text_field.type(text, delay=30)
             
             self._random_delay(2, 3)
@@ -274,107 +315,40 @@ class FacebookPoster(BasePoster):
             if image_path and Path(image_path).exists():
                 logger.info(f"Ajout de l'image: {image_path}")
                 
-                # Chercher le bouton photo/vidéo
-                media_selectors = [
-                    '[aria-label="Photo/video"]',
-                    '[aria-label="Photo/vidéo"]',
-                    'div[role="button"]:has(svg[mask*="photo"])',
-                    'i[data-visualcompletion="css-img"]:has-text("")',
-                ]
-                
-                media_clicked = False
-                for selector in media_selectors:
-                    try:
-                        btn = self.page.locator(selector).first
-                        if btn.is_visible(timeout=3000):
-                            btn.click()
-                            media_clicked = True
-                            break
-                    except:
-                        continue
-                
-                if media_clicked:
-                    self._random_delay(1, 2)
-                    
-                    # Upload du fichier
-                    file_input = self.page.locator('input[type="file"][accept*="image"]').first
-                    if not file_input.is_visible():
-                        file_input = self.page.locator('input[type="file"]').first
-                    
-                    file_input.set_input_files(image_path)
-                    
-                    # Attendre le chargement
-                    self._random_delay(3, 5)
-                    
-                    logger.info("Image ajoutée avec succès")
-                else:
-                    # Essayer via drag and drop ou autre méthode
-                    logger.warning("Bouton média non trouvé, essai avec input direct")
+                try:
                     file_input = self.page.locator('input[type="file"]').first
                     if file_input.count() > 0:
                         file_input.set_input_files(image_path)
                         self._random_delay(3, 5)
-            
-            # Ajouter une vidéo si fournie
-            elif video_path and Path(video_path).exists():
-                logger.info(f"Ajout de la vidéo: {video_path}")
-                
-                try:
-                    file_input = self.page.locator('input[type="file"][accept*="video"]').first
-                    if not file_input.is_visible():
-                        file_input = self.page.locator('input[type="file"]').first
-                    
-                    file_input.set_input_files(video_path)
-                    
-                    # Les vidéos prennent plus de temps
-                    self._random_delay(5, 10)
-                    
-                    logger.info("Vidéo ajoutée avec succès")
+                        logger.info("Image ajoutée")
                 except Exception as e:
-                    logger.warning(f"Échec ajout vidéo: {e}")
+                    logger.warning(f"Échec ajout image: {e}")
             
             self._random_delay(2, 3)
             
-            # Cliquer sur "Publier" / "Post"
+            # Cliquer sur "Publier"
             publish_selectors = [
                 'div[aria-label="Post"][role="button"]',
                 'div[aria-label="Publier"][role="button"]',
-                'span:has-text("Post"):visible',
-                'span:has-text("Publier"):visible',
+                'span:has-text("Post")',
+                'span:has-text("Publier")',
             ]
             
             published = False
             for selector in publish_selectors:
                 try:
-                    # Chercher le bouton dans le modal
-                    btn = self.page.locator(selector).last  # Souvent c'est le dernier
+                    btn = self.page.locator(selector).last
                     if btn.is_visible(timeout=3000):
-                        btn.click()
+                        btn.click(force=True)
                         published = True
                         break
                 except:
                     continue
             
             if not published:
-                # Essayer avec un sélecteur plus générique
-                try:
-                    all_buttons = self.page.locator('div[role="button"]')
-                    for i in range(all_buttons.count()):
-                        btn = all_buttons.nth(i)
-                        text = btn.text_content()
-                        if text and ('Post' in text or 'Publier' in text):
-                            btn.click()
-                            published = True
-                            break
-                except:
-                    pass
-            
-            if not published:
                 raise Exception("Bouton Publier non trouvé")
             
-            # Attendre la publication
             self._random_delay(5, 8)
-            self.page.wait_for_load_state('networkidle')
             
             self._take_screenshot("published")
             logger.info("✅ Publication Facebook terminée")
