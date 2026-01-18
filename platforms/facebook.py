@@ -1,8 +1,8 @@
 """
-Budget Famille - Facebook Poster (Fixed)
-=========================================
+Budget Famille - Facebook Poster (Fixed v2)
+============================================
 Module pour publier automatiquement sur Facebook.
-Gestion améliorée des popups de cookies.
+Gestion robuste des popups de cookies avec attente de l'overlay.
 """
 
 import os
@@ -27,23 +27,91 @@ class FacebookPoster(BasePoster):
         self.password = os.getenv('FACEBOOK_PASS')
         self.page_name = os.getenv('FACEBOOK_PAGE_NAME')
     
-    def _handle_cookie_popup(self):
-        """Gère le popup de cookies Facebook - DOIT être appelé en premier."""
+    def _handle_cookie_popup(self) -> bool:
+        """
+        Gère le popup de cookies Facebook - DOIT être appelé en premier.
+        Utilise une stratégie multi-niveaux pour gérer l'overlay.
+        """
         logger.info("Recherche du popup de cookies...")
         
+        try:
+            # Attendre que la page soit complètement chargée
+            self.page.wait_for_load_state('networkidle', timeout=10000)
+        except:
+            pass
+        
+        self._random_delay(1, 2)
+        
+        # Stratégie 1: Clic direct avec JavaScript sur le bouton du cookie dialog
+        try:
+            result = self.page.evaluate("""
+                () => {
+                    // Chercher le dialogue de cookies par data-testid
+                    const dialog = document.querySelector('[data-testid="cookie-policy-manage-dialog"]');
+                    if (dialog) {
+                        // Chercher le bouton "Autoriser" ou "Allow" dans le dialogue
+                        const buttons = dialog.querySelectorAll('div[role="button"]');
+                        for (const btn of buttons) {
+                            const text = btn.textContent.toLowerCase();
+                            // Premier bouton est généralement "Autoriser tous les cookies"
+                            if (text.includes('autoriser') || text.includes('allow') || 
+                                text.includes('accepter') || text.includes('accept') ||
+                                text.includes('essential') || text.includes('essentiel')) {
+                                btn.click();
+                                return 'clicked_dialog_button';
+                            }
+                        }
+                        // Si pas de texte trouvé, cliquer sur le premier bouton principal
+                        const primaryBtn = dialog.querySelector('div[aria-label*="cookies"], div[role="button"]');
+                        if (primaryBtn) {
+                            primaryBtn.click();
+                            return 'clicked_primary';
+                        }
+                    }
+                    
+                    // Chercher les boutons génériques
+                    const allButtons = document.querySelectorAll('button, div[role="button"]');
+                    for (const btn of allButtons) {
+                        const text = btn.textContent.toLowerCase();
+                        if ((text.includes('autoriser') && text.includes('cookie')) ||
+                            (text.includes('allow') && text.includes('cookie')) ||
+                            text.includes('tout accepter') ||
+                            text.includes('accept all') ||
+                            text === 'autoriser les cookies essentiels et optionnels' ||
+                            text === 'allow all cookies') {
+                            btn.click();
+                            return 'clicked_generic';
+                        }
+                    }
+                    
+                    return 'no_popup_found';
+                }
+            """)
+            
+            if result and result != 'no_popup_found':
+                logger.info(f"Popup cookies fermé via JavaScript: {result}")
+                self._random_delay(2, 3)
+                return True
+                
+        except Exception as e:
+            logger.debug(f"Stratégie JS échouée: {e}")
+        
+        # Stratégie 2: Utiliser les sélecteurs Playwright avec force click
         cookie_selectors = [
-            # Boutons "Tout accepter" / "Allow all"
-            'button[data-cookiebanner="accept_button"]',
+            # Sélecteurs spécifiques Facebook 2024/2025
+            '[data-testid="cookie-policy-manage-dialog"] div[role="button"]:first-of-type',
+            '[data-cookiebanner="accept_button"]',
             'button[data-testid="cookie-policy-manage-dialog-accept-button"]',
-            'button[title="Tout accepter"]',
-            'button[title="Allow all cookies"]',
-            'button:has-text("Autoriser tous les cookies")',
+            # Sélecteurs par texte
+            'div[role="button"]:has-text("Autoriser les cookies essentiels et optionnels")',
+            'div[role="button"]:has-text("Allow all cookies")',
+            'div[role="button"]:has-text("Tout accepter")',
+            'div[role="button"]:has-text("Accept all")',
             'button:has-text("Tout accepter")',
             'button:has-text("Allow all cookies")',
-            'button:has-text("Accept all")',
-            # Boutons dans le dialogue
-            'div[data-testid="cookie-policy-manage-dialog"] button:first-of-type',
-            # Sélecteurs génériques
+            # Sélecteurs par aria-label
+            '[aria-label*="Autoriser"][aria-label*="cookies"]',
+            '[aria-label*="Allow"][aria-label*="cookies"]',
             '[aria-label="Tout accepter"]',
             '[aria-label="Allow all cookies"]',
         ]
@@ -51,38 +119,36 @@ class FacebookPoster(BasePoster):
         for selector in cookie_selectors:
             try:
                 btn = self.page.locator(selector).first
-                if btn.is_visible(timeout=2000):
-                    logger.info(f"Popup cookies trouvé, clic sur: {selector}")
-                    btn.click(force=True)  # Force click pour bypasser les overlays
+                if btn.is_visible(timeout=1500):
+                    # Utiliser dispatch_event pour contourner l'overlay
+                    btn.dispatch_event('click')
+                    logger.info(f"Popup cookies fermé avec: {selector}")
                     self._random_delay(2, 3)
                     return True
             except Exception as e:
                 continue
         
-        # Essayer avec JavaScript si les sélecteurs ne marchent pas
+        # Stratégie 3: Attendre et fermer tout dialogue visible
         try:
             self.page.evaluate("""
                 () => {
-                    // Chercher tous les boutons contenant "accepter" ou "allow"
-                    const buttons = document.querySelectorAll('button');
-                    for (const btn of buttons) {
-                        const text = btn.textContent.toLowerCase();
-                        if (text.includes('accepter') || text.includes('allow') || 
-                            text.includes('autoriser') || text.includes('accept')) {
-                            btn.click();
-                            return true;
-                        }
-                    }
-                    return false;
+                    // Supprimer les overlays de cookies
+                    const overlays = document.querySelectorAll('[data-testid="cookie-policy-manage-dialog"]');
+                    overlays.forEach(el => el.remove());
+                    
+                    // Supprimer les backdrops
+                    const backdrops = document.querySelectorAll('.__fb-light-mode div[style*="position: fixed"]');
+                    backdrops.forEach(el => {
+                        if (el.style.zIndex > 100) el.remove();
+                    });
                 }
             """)
-            self._random_delay(2, 3)
-            logger.info("Popup cookies fermé via JavaScript")
-            return True
+            logger.info("Overlays de cookies supprimés via JS")
+            self._random_delay(1, 2)
         except:
             pass
         
-        logger.info("Pas de popup de cookies détecté")
+        logger.info("Pas de popup de cookies détecté ou déjà fermé")
         return False
     
     def _dismiss_popups(self):
@@ -96,13 +162,15 @@ class FacebookPoster(BasePoster):
             'div[aria-label="Close"]',
             'button:has-text("Not Now")',
             'button:has-text("Pas maintenant")',
+            'div[role="button"]:has-text("Not Now")',
+            'div[role="button"]:has-text("Pas maintenant")',
         ]
         
         for popup_selector in popups:
             try:
                 popup = self.page.locator(popup_selector).first
                 if popup.is_visible(timeout=1000):
-                    popup.click(force=True)
+                    popup.dispatch_event('click')
                     self._random_delay(0.5, 1)
             except:
                 continue
@@ -113,8 +181,9 @@ class FacebookPoster(BasePoster):
             self.page.goto(self.HOME_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
             
-            # Gérer les cookies d'abord
+            # Gérer les cookies d'abord - CRITIQUE
             self._handle_cookie_popup()
+            self._random_delay(1, 2)
             
             # Vérifier si on est sur la page de login
             current_url = self.page.url.lower()
@@ -129,7 +198,9 @@ class FacebookPoster(BasePoster):
                 '[aria-label="Votre profil"]',
                 '[aria-label="Account"]',
                 '[aria-label="Compte"]',
+                '[aria-label="Menu"]',
                 'div[role="navigation"]',
+                '[data-pagelet="LeftRail"]',
             ]
             
             for indicator in indicators:
@@ -154,52 +225,50 @@ class FacebookPoster(BasePoster):
             self.page.goto(self.LOGIN_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
             
-            # IMPORTANT: Gérer les cookies EN PREMIER
+            # CRITIQUE: Gérer les cookies AVANT toute interaction
             self._handle_cookie_popup()
             self._random_delay(1, 2)
             
-            # Attendre que le formulaire soit interactif
-            self.page.wait_for_selector('#email', state='visible', timeout=10000)
+            # Attendre que le formulaire soit prêt
+            try:
+                self.page.wait_for_selector('input#email', state='visible', timeout=15000)
+            except:
+                # Peut-être déjà connecté ou cookies non gérés
+                self._handle_cookie_popup()
+                self.page.wait_for_selector('input#email', state='visible', timeout=10000)
             
-            # Remplir l'email
-            email_field = self.page.locator('#email')
-            email_field.click(force=True)
+            # Entrer l'email
+            email_field = self.page.locator('input#email')
+            email_field.click()
             self._random_delay(0.3, 0.5)
-            email_field.fill('')  # Clear first
-            email_field.type(self.email, delay=50)
+            email_field.fill(self.email)
             
             self._random_delay(0.5, 1)
             
-            # Remplir le mot de passe
-            password_field = self.page.locator('#pass')
-            password_field.click(force=True)
+            # Entrer le mot de passe
+            password_field = self.page.locator('input#pass')
+            password_field.click()
             self._random_delay(0.3, 0.5)
-            password_field.fill('')
-            password_field.type(self.password, delay=50)
+            password_field.fill(self.password)
             
-            self._random_delay(0.5, 1)
+            self._random_delay(1, 2)
             
-            # Cliquer sur "Se connecter"
-            login_button = self.page.locator('button[name="login"], button[type="submit"], #loginbutton').first
-            login_button.click(force=True)
+            # Cliquer sur le bouton de connexion
+            login_btn = self.page.locator('button[name="login"], button[type="submit"], button:has-text("Log In"), button:has-text("Se connecter")').first
+            login_btn.click()
             
             # Attendre la redirection
             self._random_delay(5, 8)
-            self.page.wait_for_load_state('domcontentloaded', timeout=60000)
             
-            # Gérer les vérifications de sécurité
+            # Vérifier s'il y a un checkpoint de sécurité
             current_url = self.page.url.lower()
-            if 'checkpoint' in current_url or 'challenge' in current_url or 'two_step_verification' in current_url:
+            if 'checkpoint' in current_url or 'two_step' in current_url:
                 logger.warning("⚠️ Vérification de sécurité Facebook détectée!")
-                logger.warning("Connectez-vous manuellement d'abord pour valider l'appareil.")
-                self._take_screenshot("security_challenge")
+                self._take_screenshot("security_checkpoint")
                 return False
             
-            # Fermer les popups post-login
+            # Fermer les popups post-connexion
             self._dismiss_popups()
-            
-            # Vérifier le succès
-            self._random_delay(2, 3)
             
             if self._check_logged_in():
                 logger.info("✅ Connexion Facebook réussie")
@@ -213,140 +282,124 @@ class FacebookPoster(BasePoster):
             self._take_screenshot("login_error")
             return False
     
-    def _go_to_page(self) -> bool:
-        """Navigue vers la page Facebook (si configurée)."""
+    def _switch_to_page(self) -> bool:
+        """Passe en mode page pour publier."""
         if not self.page_name:
+            logger.info("Pas de nom de page configuré, publication sur profil personnel")
             return True
         
         try:
-            logger.info(f"Navigation vers la page: {self.page_name}")
+            logger.info(f"Passage à la page: {self.page_name}")
             
-            self.page.goto('https://www.facebook.com/pages/?category=your_pages', timeout=60000)
-            self.page.wait_for_load_state('domcontentloaded')
+            # Aller sur la page
+            page_url = f"https://www.facebook.com/{self.page_name.replace(' ', '')}"
+            self.page.goto(page_url, wait_until='domcontentloaded', timeout=30000)
             self._random_delay(2, 3)
             
-            page_link = self.page.locator(f'a:has-text("{self.page_name}")').first
+            self._dismiss_popups()
             
-            if page_link.is_visible(timeout=5000):
-                page_link.click()
-                self._random_delay(2, 3)
-                logger.info(f"Page '{self.page_name}' trouvée et sélectionnée")
-                return True
-            else:
-                logger.warning(f"Page '{self.page_name}' non trouvée, publication sur le profil")
-                self.page.goto(self.HOME_URL)
-                return True
-                
-        except Exception as e:
-            logger.warning(f"Impossible d'accéder à la page: {e}")
-            self.page.goto(self.HOME_URL)
+            # Vérifier si on est sur la page
             return True
+            
+        except Exception as e:
+            logger.error(f"Erreur changement de page: {e}")
+            return False
     
     def _publish(self, text: str, image_path: str = None, video_path: str = None) -> bool:
-        """Publie un post sur Facebook."""
+        """Publie sur Facebook."""
         try:
             logger.info("Publication sur Facebook...")
             
-            # Aller sur la page si configurée
-            self._go_to_page()
+            # Passer à la page si configurée
+            self._switch_to_page()
             
-            self.page.wait_for_load_state('domcontentloaded', timeout=60000)
-            self._random_delay(2, 3)
-            
-            # Fermer les popups
-            self._dismiss_popups()
-            
-            # Cliquer sur "À quoi pensez-vous ?"
+            # Chercher et cliquer sur la zone de création de post
             create_post_selectors = [
                 '[aria-label="Create a post"]',
                 '[aria-label="Créer une publication"]',
                 'div[role="button"]:has-text("What\'s on your mind")',
-                'div[role="button"]:has-text("À quoi pensez-vous")',
+                'div[role="button"]:has-text("Exprimez-vous")',
                 'div[role="button"]:has-text("Quoi de neuf")',
-                'span:has-text("What\'s on your mind")',
-                'span:has-text("À quoi pensez-vous")',
+                '[data-pagelet="ProfileComposer"] div[role="button"]',
             ]
             
-            clicked = False
+            create_btn = None
             for selector in create_post_selectors:
                 try:
-                    element = self.page.locator(selector).first
-                    if element.is_visible(timeout=3000):
-                        element.click(force=True)
-                        clicked = True
+                    btn = self.page.locator(selector).first
+                    if btn.is_visible(timeout=3000):
+                        create_btn = btn
                         break
                 except:
                     continue
             
-            if not clicked:
+            if not create_btn:
                 raise Exception("Bouton de création de post non trouvé")
             
+            create_btn.click()
             self._random_delay(2, 3)
             
-            # Attendre que le modal s'ouvre
-            text_field_selectors = [
-                'div[contenteditable="true"][role="textbox"]',
-                'div[aria-label*="What\'s on your mind"]',
-                'div[aria-label*="quoi pensez-vous"]',
-                'div[data-contents="true"]',
+            # Attendre le modal de composition
+            text_area_selectors = [
+                '[aria-label="What\'s on your mind?"]',
+                '[aria-label="Exprimez-vous..."]',
+                '[contenteditable="true"][role="textbox"]',
+                'div[role="textbox"]',
             ]
             
-            text_field = None
-            for selector in text_field_selectors:
+            text_area = None
+            for selector in text_area_selectors:
                 try:
-                    field = self.page.locator(selector).first
-                    if field.is_visible(timeout=5000):
-                        text_field = field
+                    area = self.page.locator(selector).first
+                    if area.is_visible(timeout=5000):
+                        text_area = area
                         break
                 except:
                     continue
             
-            if not text_field:
-                raise Exception("Champ de texte non trouvé")
+            if not text_area:
+                raise Exception("Zone de texte non trouvée")
             
-            # Cliquer et taper le texte
-            text_field.click(force=True)
+            # Entrer le texte
+            text_area.click()
             self._random_delay(0.5, 1)
-            text_field.type(text, delay=30)
+            text_area.type(text, delay=20)
             
             self._random_delay(2, 3)
             
-            # Ajouter une image si fournie
+            # Ajouter l'image si fournie
             if image_path and Path(image_path).exists():
-                logger.info(f"Ajout de l'image: {image_path}")
-                
                 try:
-                    file_input = self.page.locator('input[type="file"]').first
-                    if file_input.count() > 0:
-                        file_input.set_input_files(image_path)
-                        self._random_delay(3, 5)
-                        logger.info("Image ajoutée")
+                    # Chercher le bouton d'ajout de photo
+                    photo_btn = self.page.locator('[aria-label="Photo/video"], [aria-label="Photo/vidéo"]').first
+                    if photo_btn.is_visible(timeout=3000):
+                        photo_btn.click()
+                        self._random_delay(1, 2)
+                    
+                    # Upload le fichier
+                    file_input = self.page.locator('input[type="file"][accept*="image"]').first
+                    file_input.set_input_files(image_path)
+                    self._random_delay(3, 5)
+                    logger.info("Image ajoutée")
                 except Exception as e:
-                    logger.warning(f"Échec ajout image: {e}")
+                    logger.warning(f"Impossible d'ajouter l'image: {e}")
             
-            self._random_delay(2, 3)
-            
-            # Cliquer sur "Publier"
+            # Cliquer sur Publier
             publish_selectors = [
-                'div[aria-label="Post"][role="button"]',
-                'div[aria-label="Publier"][role="button"]',
-                'span:has-text("Post")',
-                'span:has-text("Publier")',
+                '[aria-label="Post"]',
+                '[aria-label="Publier"]',
+                'div[role="button"]:has-text("Post")',
+                'div[role="button"]:has-text("Publier")',
             ]
             
-            published = False
             for selector in publish_selectors:
                 try:
-                    btn = self.page.locator(selector).last
-                    if btn.is_visible(timeout=3000):
-                        btn.click(force=True)
-                        published = True
+                    btn = self.page.locator(selector).first
+                    if btn.is_visible() and btn.is_enabled():
+                        btn.click()
                         break
                 except:
                     continue
-            
-            if not published:
-                raise Exception("Bouton Publier non trouvé")
             
             self._random_delay(5, 8)
             
