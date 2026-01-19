@@ -1,8 +1,8 @@
 """
-Budget Famille - LinkedIn Poster (Fixed v5)
+Budget Famille - LinkedIn Poster (Fixed v6)
 ============================================
 Module pour publier automatiquement sur LinkedIn.
-Gestion améliorée du bouton de publication.
+Détection robuste du bouton de publication (FR/EN).
 """
 
 import os
@@ -32,12 +32,8 @@ class LinkedInPoster(BasePoster):
         """Gère le popup de cookies LinkedIn."""
         cookie_selectors = [
             'button[action-type="ACCEPT"]',
-            'button:has-text("Accept & Join")',
-            'button:has-text("Accepter et rejoindre")',
             'button:has-text("Accept")',
             'button:has-text("Accepter")',
-            'button:has-text("Accept all")',
-            'button:has-text("Tout accepter")',
             '.artdeco-global-alert__action button',
         ]
         
@@ -47,14 +43,14 @@ class LinkedInPoster(BasePoster):
                 if btn.is_visible(timeout=2000):
                     btn.click(force=True)
                     self._random_delay(1, 2)
-                    logger.info(f"Popup cookies LinkedIn fermé: {selector}")
+                    logger.info(f"Popup cookies fermé: {selector}")
                     return True
             except:
                 continue
         return False
     
     def _dismiss_popups(self):
-        """Ferme les popups LinkedIn courants."""
+        """Ferme les popups LinkedIn."""
         self._handle_cookie_popup()
         
         popup_selectors = [
@@ -75,51 +71,42 @@ class LinkedInPoster(BasePoster):
                 continue
     
     def _check_logged_in(self) -> bool:
-        """Vérifie si on est connecté à LinkedIn."""
+        """Vérifie si connecté à LinkedIn."""
         try:
             self.page.goto(self.FEED_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
-            
             self._handle_cookie_popup()
             
-            current_url = self.page.url.lower()
-            if 'login' in current_url or 'checkpoint' in current_url or 'authwall' in current_url:
+            if 'login' in self.page.url.lower() or 'authwall' in self.page.url.lower():
                 return False
             
-            logged_in_indicators = [
+            indicators = [
                 'button[aria-label*="Start a post"]',
                 'button[aria-label*="Commencer un post"]',
                 '.share-box-feed-entry__trigger',
-                '.feed-identity-module',
                 '.global-nav__me-photo',
             ]
             
-            for indicator in logged_in_indicators:
+            for indicator in indicators:
                 try:
                     if self.page.locator(indicator).count() > 0:
                         return True
                 except:
                     continue
-            
             return False
-            
-        except Exception as e:
-            logger.error(f"Erreur vérification connexion LinkedIn: {e}")
+        except:
             return False
     
     def _wait_for_popup_close(self, popup, timeout: int = 30000) -> bool:
-        """Attend que le popup se ferme."""
+        """Attend la fermeture du popup."""
         start_time = time.time()
-        timeout_sec = timeout / 1000
-        
-        while time.time() - start_time < timeout_sec:
+        while time.time() - start_time < timeout / 1000:
             try:
                 if popup.is_closed():
                     return True
             except:
                 return True
             time.sleep(0.5)
-        
         return False
     
     def _login_with_google(self) -> bool:
@@ -130,29 +117,20 @@ class LinkedInPoster(BasePoster):
         try:
             logger.info("🔍 Recherche du bouton Google...")
             
-            google_btn_selectors = [
-                '.alternate-signin__btn--google',
-                'button:has-text("Sign in with Google")',
-                'button:has-text("Continue with Google")',
-                '[data-provider="google"]',
-            ]
-            
             google_btn = None
-            for selector in google_btn_selectors:
+            for selector in ['.alternate-signin__btn--google', 'button:has-text("Sign in with Google")']:
                 try:
                     btn = self.page.locator(selector).first
                     if btn.is_visible(timeout=2000):
                         google_btn = btn
-                        logger.info(f"✅ Bouton Google trouvé: {selector}")
                         break
                 except:
                     continue
             
             if not google_btn:
-                logger.info("❌ Bouton Google non trouvé")
                 return False
             
-            logger.info("Clic sur le bouton Google...")
+            logger.info("✅ Bouton Google trouvé")
             
             with self.page.context.expect_page(timeout=45000) as popup_info:
                 google_btn.click()
@@ -161,29 +139,24 @@ class LinkedInPoster(BasePoster):
             popup.wait_for_load_state('domcontentloaded', timeout=30000)
             self._random_delay(2, 3)
             
-            # Liste de comptes Google
+            # Sélection du compte
             try:
-                account_list = popup.locator('div[data-email], div[data-identifier]')
-                if account_list.count() > 0:
-                    logger.info("📋 Liste de comptes détectée")
-                    for selector in [f'div[data-email="{self.google_email}"]', f'div[data-identifier="{self.google_email}"]']:
-                        try:
-                            account = popup.locator(selector).first
-                            if account.is_visible(timeout=3000):
-                                logger.info(f"✅ Compte trouvé: {self.google_email}")
-                                account.click()
-                                self._random_delay(2, 3)
-                                break
-                        except:
-                            continue
+                for selector in [f'div[data-email="{self.google_email}"]', f'div[data-identifier="{self.google_email}"]']:
+                    try:
+                        account = popup.locator(selector).first
+                        if account.is_visible(timeout=3000):
+                            account.click()
+                            self._random_delay(2, 3)
+                            break
+                    except:
+                        continue
             except:
                 pass
             
-            # Champ email
+            # Email
             try:
                 email_field = popup.locator('input[type="email"], #identifierId').first
                 if email_field.is_visible(timeout=5000):
-                    logger.info("Saisie email Google...")
                     email_field.fill(self.google_email)
                     self._random_delay(1, 2)
                     popup.locator('button:has-text("Next"), button:has-text("Suivant")').first.click()
@@ -191,29 +164,14 @@ class LinkedInPoster(BasePoster):
             except:
                 pass
             
-            # Mot de passe
+            # Password
             try:
                 password_field = popup.locator('input[type="password"]').first
                 if password_field.is_visible(timeout=10000):
-                    logger.info("Saisie mot de passe Google...")
                     password_field.fill(self.google_password)
                     self._random_delay(1, 2)
                     popup.locator('button:has-text("Next"), button:has-text("Suivant")').first.click()
                     self._random_delay(3, 5)
-            except:
-                pass
-            
-            # Autorisation
-            try:
-                for selector in ['button:has-text("Allow")', 'button:has-text("Continue")']:
-                    try:
-                        btn = popup.locator(selector).first
-                        if btn.is_visible(timeout=5000):
-                            btn.click()
-                            self._random_delay(2, 3)
-                            break
-                    except:
-                        continue
             except:
                 pass
             
@@ -231,7 +189,6 @@ class LinkedInPoster(BasePoster):
             if self._check_logged_in():
                 logger.info("✅ Connexion LinkedIn via Google réussie!")
                 return True
-            
             return False
             
         except Exception as e:
@@ -248,7 +205,6 @@ class LinkedInPoster(BasePoster):
                 self._random_delay(2, 3)
             
             self._handle_cookie_popup()
-            
             self.page.wait_for_selector('#username', state='visible', timeout=15000)
             
             self.page.locator('#username').fill(self.email)
@@ -271,7 +227,7 @@ class LinkedInPoster(BasePoster):
             return False
     
     def _login(self) -> bool:
-        """Connexion: Google prioritaire, puis classique."""
+        """Connexion: Google prioritaire puis classique."""
         try:
             logger.info("Connexion à LinkedIn...")
             
@@ -291,8 +247,160 @@ class LinkedInPoster(BasePoster):
             logger.error(f"Erreur connexion LinkedIn: {e}")
             return False
     
+    def _click_publish_button(self) -> bool:
+        """
+        Clique sur le bouton de publication avec détection robuste.
+        Supporte: Post, Publier, Share, Partager, Envoyer, Send (FR/EN)
+        """
+        logger.info("Recherche du bouton de publication...")
+        
+        # Liste exhaustive des sélecteurs
+        publish_selectors = [
+            # Par data-control-name (le plus fiable)
+            'button[data-control-name="share.post"]',
+            
+            # Par classe LinkedIn
+            'button.share-actions__primary-action',
+            '.share-box-footer__primary-btn',
+            '.share-creation-state__footer button.artdeco-button--primary',
+            
+            # Par texte exact (EN)
+            'button:text-is("Post")',
+            'button:text-is("Share")',
+            'button:text-is("Send")',
+            'button:text-is("Publish")',
+            
+            # Par texte exact (FR)
+            'button:text-is("Publier")',
+            'button:text-is("Poster")',
+            'button:text-is("Partager")',
+            'button:text-is("Envoyer")',
+            
+            # Par has-text (moins précis mais plus flexible)
+            'button:has-text("Post")',
+            'button:has-text("Publier")',
+            'button:has-text("Poster")',
+            'button:has-text("Share")',
+            'button:has-text("Partager")',
+            
+            # Par aria-label
+            'button[aria-label="Post"]',
+            'button[aria-label="Publier"]',
+            'button[aria-label="Share"]',
+            'button[aria-label="Partager"]',
+            
+            # Boutons primaires dans le modal
+            '.share-box-footer button.artdeco-button--primary',
+            'footer button.artdeco-button--primary',
+            'div[role="dialog"] button.artdeco-button--primary',
+        ]
+        
+        for selector in publish_selectors:
+            try:
+                btn = self.page.locator(selector).first
+                if btn.is_visible(timeout=1500):
+                    # Vérifier que le bouton est activé
+                    if btn.is_enabled():
+                        btn_text = btn.text_content().strip()
+                        logger.info(f"✅ Bouton trouvé: '{btn_text}' ({selector})")
+                        btn.click(force=True)
+                        return True
+            except:
+                continue
+        
+        # Fallback JavaScript - recherche intelligente
+        logger.info("Recherche via JavaScript...")
+        try:
+            clicked = self.page.evaluate("""
+                () => {
+                    // Mots-clés pour le bouton de publication
+                    const publishKeywords = ['post', 'publier', 'poster', 'share', 'partager', 'send', 'envoyer', 'publish'];
+                    
+                    // Chercher dans le modal de partage
+                    const modal = document.querySelector('.share-box, .artdeco-modal, div[role="dialog"]');
+                    const searchContainer = modal || document;
+                    
+                    // Chercher tous les boutons
+                    const buttons = searchContainer.querySelectorAll('button');
+                    
+                    // Premier passage: boutons primaires avec le bon texte
+                    for (const btn of buttons) {
+                        if (btn.disabled) continue;
+                        
+                        const text = btn.textContent.trim().toLowerCase();
+                        const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
+                        const classes = btn.className.toLowerCase();
+                        
+                        const isPrimary = classes.includes('primary') || 
+                                         classes.includes('share-actions') ||
+                                         btn.closest('.share-box-footer, .share-actions, footer');
+                        
+                        const isPublishButton = publishKeywords.some(keyword => 
+                            text === keyword || ariaLabel === keyword
+                        );
+                        
+                        if (isPrimary && isPublishButton) {
+                            console.log('Clicking publish button:', btn.textContent);
+                            btn.click();
+                            return { success: true, text: btn.textContent.trim() };
+                        }
+                    }
+                    
+                    // Deuxième passage: n'importe quel bouton avec le bon texte
+                    for (const btn of buttons) {
+                        if (btn.disabled) continue;
+                        
+                        const text = btn.textContent.trim().toLowerCase();
+                        
+                        if (publishKeywords.some(keyword => text === keyword)) {
+                            console.log('Clicking button by text:', btn.textContent);
+                            btn.click();
+                            return { success: true, text: btn.textContent.trim() };
+                        }
+                    }
+                    
+                    // Troisième passage: bouton primaire dans le footer
+                    const footers = searchContainer.querySelectorAll('.share-box-footer, .share-actions, footer, [class*="footer"]');
+                    for (const footer of footers) {
+                        const primaryBtn = footer.querySelector('button.artdeco-button--primary, button[class*="primary"]');
+                        if (primaryBtn && !primaryBtn.disabled) {
+                            console.log('Clicking primary button in footer:', primaryBtn.textContent);
+                            primaryBtn.click();
+                            return { success: true, text: primaryBtn.textContent.trim() };
+                        }
+                    }
+                    
+                    return { success: false };
+                }
+            """)
+            
+            if clicked and clicked.get('success'):
+                logger.info(f"✅ Bouton cliqué via JS: '{clicked.get('text')}'")
+                return True
+        except Exception as e:
+            logger.debug(f"JavaScript fallback failed: {e}")
+        
+        # Dernier recours: cliquer sur le dernier bouton primaire visible
+        logger.info("Dernier recours: bouton primaire le plus récent...")
+        try:
+            all_primary = self.page.locator('button.artdeco-button--primary').all()
+            for btn in reversed(all_primary):
+                try:
+                    if btn.is_visible() and btn.is_enabled():
+                        btn_text = btn.text_content().strip()
+                        logger.info(f"Clic sur bouton primaire: '{btn_text}'")
+                        btn.click(force=True)
+                        return True
+                except:
+                    continue
+        except:
+            pass
+        
+        logger.error("❌ Bouton de publication non trouvé!")
+        return False
+    
     def _publish(self, text: str, image_path: str = None, video_path: str = None) -> bool:
-        """Publie sur LinkedIn avec détection robuste du bouton de publication."""
+        """Publie sur LinkedIn."""
         try:
             logger.info("Publication sur LinkedIn...")
             
@@ -300,268 +408,103 @@ class LinkedInPoster(BasePoster):
             self._random_delay(2, 3)
             self._dismiss_popups()
             
-            # ===== ÉTAPE 1: Ouvrir le modal de création de post =====
-            logger.info("Étape 1: Ouverture du modal de création...")
+            # ===== ÉTAPE 1: Ouvrir le modal =====
+            logger.info("Étape 1: Ouverture du modal...")
             
-            start_post_selectors = [
+            start_selectors = [
                 'button[aria-label*="Start a post"]',
                 'button[aria-label*="Commencer un post"]',
                 '.share-box-feed-entry__trigger',
                 'button:has-text("Start a post")',
                 'button:has-text("Commencer un post")',
-                '.share-box-feed-entry__top-bar',
-                'div[data-urn] button.artdeco-button',
             ]
             
-            start_btn = None
-            for selector in start_post_selectors:
+            clicked = False
+            for selector in start_selectors:
                 try:
                     btn = self.page.locator(selector).first
                     if btn.is_visible(timeout=3000):
-                        start_btn = btn
-                        logger.info(f"Bouton 'Start a post' trouvé: {selector}")
+                        btn.click(force=True)
+                        clicked = True
+                        logger.info(f"Modal ouvert: {selector}")
                         break
                 except:
                     continue
             
-            if not start_btn:
-                # Essayer via JavaScript
-                logger.info("Recherche du bouton via JavaScript...")
-                clicked = self.page.evaluate("""
-                    () => {
-                        // Chercher le bouton de création de post
-                        const btns = document.querySelectorAll('button, div[role="button"]');
-                        for (const btn of btns) {
-                            const text = btn.textContent.toLowerCase();
-                            const label = btn.getAttribute('aria-label') || '';
-                            if (text.includes('start a post') || text.includes('commencer') || 
-                                label.includes('Start a post') || label.includes('Commencer')) {
-                                btn.click();
-                                return true;
-                            }
-                        }
-                        // Chercher le trigger de la share box
-                        const shareBox = document.querySelector('.share-box-feed-entry__trigger, .share-box-feed-entry__top-bar');
-                        if (shareBox) {
-                            shareBox.click();
-                            return true;
-                        }
-                        return false;
-                    }
-                """)
-                if clicked:
-                    logger.info("Bouton cliqué via JavaScript")
-                else:
-                    raise Exception("Bouton 'Start a post' non trouvé")
-            else:
-                start_btn.click()
+            if not clicked:
+                raise Exception("Bouton 'Start a post' non trouvé")
             
             self._random_delay(2, 3)
             self._take_screenshot("modal_opened")
             
-            # ===== ÉTAPE 2: Trouver et remplir la zone de texte =====
+            # ===== ÉTAPE 2: Saisir le texte =====
             logger.info("Étape 2: Saisie du texte...")
             
-            text_area_selectors = [
+            editor_selectors = [
                 '.ql-editor[data-placeholder]',
                 '.ql-editor',
                 'div[contenteditable="true"][role="textbox"]',
                 '[aria-label="Text editor for creating content"]',
                 '[aria-label="Éditeur de texte pour créer du contenu"]',
-                'div[aria-placeholder*="What do you want to talk about"]',
-                'div[aria-placeholder*="De quoi souhaitez-vous discuter"]',
-                '.editor-content div[contenteditable="true"]',
             ]
             
-            text_area = None
-            for selector in text_area_selectors:
+            editor = None
+            for selector in editor_selectors:
                 try:
-                    area = self.page.locator(selector).first
-                    if area.is_visible(timeout=5000):
-                        text_area = area
-                        logger.info(f"Zone de texte trouvée: {selector}")
+                    field = self.page.locator(selector).first
+                    if field.is_visible(timeout=5000):
+                        editor = field
                         break
                 except:
                     continue
             
-            if not text_area:
-                raise Exception("Zone de texte non trouvée")
+            if not editor:
+                raise Exception("Éditeur de texte non trouvé")
             
-            text_area.click()
+            editor.click(force=True)
             self._random_delay(0.5, 1)
-            text_area.type(text, delay=20)
+            editor.type(text, delay=25)
             
             self._random_delay(2, 3)
             self._take_screenshot("text_entered")
             
-            # ===== ÉTAPE 3: Ajouter l'image si fournie =====
+            # ===== ÉTAPE 3: Ajouter l'image =====
             if image_path and Path(image_path).exists():
                 logger.info("Étape 3: Ajout de l'image...")
                 try:
-                    media_btn_selectors = [
-                        'button[aria-label*="Add a photo"]',
-                        'button[aria-label*="Ajouter une photo"]',
-                        'button[aria-label*="Add media"]',
-                        'button[aria-label*="Ajouter un média"]',
-                        '[data-control-name="share.create_image"]',
-                    ]
-                    
-                    for selector in media_btn_selectors:
-                        try:
-                            btn = self.page.locator(selector).first
-                            if btn.is_visible(timeout=2000):
-                                btn.click()
-                                self._random_delay(1, 2)
-                                break
-                        except:
-                            continue
-                    
                     file_input = self.page.locator('input[type="file"][accept*="image"]').first
                     file_input.set_input_files(image_path)
                     self._random_delay(3, 5)
                     logger.info("✅ Image ajoutée")
+                    self._take_screenshot("image_added")
                 except Exception as e:
                     logger.warning(f"Impossible d'ajouter l'image: {e}")
             
-            # ===== ÉTAPE 4: Cliquer sur le bouton de publication =====
-            logger.info("Étape 4: Publication du post...")
+            # ===== ÉTAPE 4: Publier =====
+            logger.info("Étape 4: Publication...")
             self._take_screenshot("before_publish")
             
-            # Liste exhaustive des sélecteurs pour le bouton de publication
-            publish_selectors = [
-                # Sélecteurs par data-control-name (LinkedIn specific)
-                'button[data-control-name="share.post"]',
+            if self._click_publish_button():
+                self._random_delay(3, 5)
+                self._take_screenshot("after_publish")
                 
-                # Sélecteurs par classe
-                '.share-actions__primary-action',
-                '.share-box-footer__primary-btn',
-                
-                # Sélecteurs par texte (anglais)
-                'button:has-text("Post")',
-                'button:has-text("Publish")',
-                'button:has-text("Send")',
-                'button:has-text("Share")',
-                
-                # Sélecteurs par texte (français)
-                'button:has-text("Publier")',
-                'button:has-text("Poster")',
-                'button:has-text("Envoyer")',
-                'button:has-text("Partager")',
-                
-                # Sélecteurs par aria-label
-                'button[aria-label="Post"]',
-                'button[aria-label="Publier"]',
-                'button[aria-label="Share post"]',
-                
-                # Sélecteurs génériques dans le modal
-                '.share-box_actions button.artdeco-button--primary',
-                'div[data-test-modal] button.artdeco-button--primary',
-                '.share-creation-state__footer button.artdeco-button--primary',
-                
-                # Boutons primaires dans le footer
-                'footer button.artdeco-button--primary',
-                '.share-box-footer button.artdeco-button--primary',
-            ]
-            
-            publish_btn = None
-            for selector in publish_selectors:
+                # Vérifier si le modal s'est fermé
                 try:
-                    btn = self.page.locator(selector).first
-                    if btn.is_visible(timeout=2000) and btn.is_enabled():
-                        publish_btn = btn
-                        logger.info(f"✅ Bouton de publication trouvé: {selector}")
-                        break
+                    modal_still_visible = self.page.locator('.share-box, .artdeco-modal').first.is_visible(timeout=3000)
+                    if modal_still_visible:
+                        # Peut-être un message d'erreur
+                        error = self.page.locator('.artdeco-inline-feedback--error').first
+                        if error.is_visible(timeout=1000):
+                            logger.error(f"Erreur: {error.text_content()}")
+                            return False
                 except:
-                    continue
-            
-            # Si pas trouvé avec les sélecteurs, essayer via JavaScript
-            if not publish_btn:
-                logger.info("Recherche du bouton de publication via JavaScript...")
-                clicked = self.page.evaluate("""
-                    () => {
-                        // Chercher dans le modal de partage
-                        const modal = document.querySelector('.share-box, [data-test-modal], .artdeco-modal');
-                        const searchContainer = modal || document;
-                        
-                        // Chercher tous les boutons
-                        const buttons = searchContainer.querySelectorAll('button');
-                        
-                        for (const btn of buttons) {
-                            const text = btn.textContent.trim().toLowerCase();
-                            const ariaLabel = (btn.getAttribute('aria-label') || '').toLowerCase();
-                            const classes = btn.className.toLowerCase();
-                            
-                            // Vérifier si c'est un bouton primaire avec le bon texte
-                            const isPrimary = classes.includes('primary') || classes.includes('share-actions');
-                            const isPostButton = (
-                                text === 'post' || text === 'publier' || text === 'poster' ||
-                                text === 'share' || text === 'partager' ||
-                                text === 'publish' || text === 'send' || text === 'envoyer' ||
-                                ariaLabel.includes('post') || ariaLabel.includes('publier')
-                            );
-                            
-                            if (isPostButton && !btn.disabled) {
-                                console.log('Found publish button:', btn.textContent);
-                                btn.click();
-                                return true;
-                            }
-                            
-                            // Fallback: bouton primaire dans le footer du modal
-                            if (isPrimary && btn.closest('.share-box-footer, .share-actions, footer')) {
-                                console.log('Found primary button in footer:', btn.textContent);
-                                btn.click();
-                                return true;
-                            }
-                        }
-                        
-                        return false;
-                    }
-                """)
+                    pass  # Modal fermé = succès
                 
-                if clicked:
-                    logger.info("✅ Bouton de publication cliqué via JavaScript")
-                else:
-                    # Dernière tentative: chercher le bouton par sa position
-                    logger.info("Dernière tentative: bouton primaire dans le modal...")
-                    try:
-                        primary_btn = self.page.locator('button.artdeco-button--primary').last
-                        if primary_btn.is_visible() and primary_btn.is_enabled():
-                            btn_text = primary_btn.text_content()
-                            logger.info(f"Clic sur bouton primaire: {btn_text}")
-                            primary_btn.click(force=True)
-                        else:
-                            raise Exception("Bouton de publication non trouvé ou désactivé")
-                    except Exception as e:
-                        self._take_screenshot("publish_button_not_found")
-                        raise Exception(f"Impossible de trouver le bouton de publication: {e}")
+                logger.info("✅ Publication LinkedIn terminée!")
+                return True
             else:
-                # Cliquer sur le bouton trouvé
-                try:
-                    publish_btn.click(force=True)
-                except:
-                    # Si le clic normal échoue, essayer dispatch_event
-                    publish_btn.dispatch_event('click')
-            
-            self._random_delay(3, 5)
-            self._take_screenshot("after_publish")
-            
-            # Vérifier si le modal s'est fermé (publication réussie)
-            try:
-                # Si le modal est encore visible après 3 secondes, il y a peut-être une erreur
-                modal_visible = self.page.locator('.share-box, .artdeco-modal').first.is_visible(timeout=3000)
-                if modal_visible:
-                    logger.warning("Le modal est toujours visible, vérification...")
-                    # Vérifier s'il y a un message d'erreur
-                    error = self.page.locator('.share-box-error, .artdeco-inline-feedback--error').first
-                    if error.is_visible(timeout=1000):
-                        error_text = error.text_content()
-                        logger.error(f"Erreur de publication: {error_text}")
-                        return False
-            except:
-                pass  # Le modal s'est fermé, c'est bon
-            
-            logger.info("✅ Publication LinkedIn terminée!")
-            return True
+                self._take_screenshot("publish_button_not_found")
+                raise Exception("Impossible de publier: bouton non trouvé")
             
         except Exception as e:
             logger.error(f"Erreur publication LinkedIn: {e}")

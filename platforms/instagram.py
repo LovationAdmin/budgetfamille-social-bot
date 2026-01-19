@@ -1,8 +1,8 @@
 """
-Budget Famille - Instagram Poster (Fixed)
-==========================================
+Budget Famille - Instagram Poster (Fixed v5)
+=============================================
 Module pour publier automatiquement sur Instagram.
-Meilleure gestion des cookies et timeouts.
+Gestion complète du flow multi-étapes (crop, filter, caption, share).
 """
 
 import os
@@ -15,7 +15,7 @@ logger = get_logger(__name__)
 
 
 class InstagramPoster(BasePoster):
-    """Poster pour Instagram via la version web."""
+    """Poster pour Instagram."""
     
     PLATFORM_NAME = "instagram"
     LOGIN_URL = "https://www.instagram.com/accounts/login/"
@@ -26,8 +26,8 @@ class InstagramPoster(BasePoster):
         self.username = os.getenv('INSTAGRAM_USER')
         self.password = os.getenv('INSTAGRAM_PASS')
     
-    def _handle_cookie_popup(self):
-        """Gère le popup de cookies Instagram."""
+    def _handle_cookie_popup(self) -> bool:
+        """Gère les popups de cookies Instagram."""
         cookie_selectors = [
             'button:has-text("Allow all cookies")',
             'button:has-text("Autoriser tous les cookies")',
@@ -35,15 +35,14 @@ class InstagramPoster(BasePoster):
             'button:has-text("Tout accepter")',
             'button:has-text("Accept")',
             'button:has-text("Accepter")',
-            'button:has-text("Allow essential and optional cookies")',
         ]
         
         for selector in cookie_selectors:
             try:
                 btn = self.page.locator(selector).first
-                if btn.is_visible(timeout=3000):
+                if btn.is_visible(timeout=2000):
                     btn.click(force=True)
-                    self._random_delay(2, 3)
+                    self._random_delay(1, 2)
                     logger.info("Popup cookies Instagram fermé")
                     return True
             except:
@@ -54,19 +53,20 @@ class InstagramPoster(BasePoster):
         """Ferme les popups Instagram courants."""
         self._handle_cookie_popup()
         
-        popups = [
+        popup_selectors = [
             'button:has-text("Not Now")',
             'button:has-text("Pas maintenant")',
-            'button:has-text("Plus tard")',
             'button:has-text("Cancel")',
+            'button:has-text("Annuler")',
             '[aria-label="Close"]',
             '[aria-label="Fermer"]',
+            'svg[aria-label="Close"]',
         ]
         
-        for popup_selector in popups:
+        for selector in popup_selectors:
             try:
-                popup = self.page.locator(popup_selector).first
-                if popup.is_visible(timeout=2000):
+                popup = self.page.locator(selector).first
+                if popup.is_visible(timeout=1500):
                     popup.click(force=True)
                     self._random_delay(0.5, 1)
             except:
@@ -76,19 +76,20 @@ class InstagramPoster(BasePoster):
         """Vérifie si on est connecté à Instagram."""
         try:
             self.page.goto(self.HOME_URL, wait_until='domcontentloaded', timeout=60000)
-            self._random_delay(3, 4)
+            self._random_delay(2, 3)
             
             self._handle_cookie_popup()
-            self._dismiss_popups()
             
-            if 'login' in self.page.url.lower():
+            current_url = self.page.url.lower()
+            if 'login' in current_url or 'accounts' in current_url:
                 return False
             
             indicators = [
                 'svg[aria-label="New post"]',
                 'svg[aria-label="Nouvelle publication"]',
-                '[aria-label="Home"]',
-                '[aria-label="Accueil"]',
+                '[aria-label="Create"]',
+                '[aria-label="Créer"]',
+                'svg[aria-label="Home"]',
             ]
             
             for indicator in indicators:
@@ -110,63 +111,159 @@ class InstagramPoster(BasePoster):
             logger.info("Connexion à Instagram...")
             
             self.page.goto(self.LOGIN_URL, wait_until='domcontentloaded', timeout=60000)
-            self._random_delay(3, 4)
+            self._random_delay(2, 3)
             
-            # Gérer les cookies EN PREMIER
             self._handle_cookie_popup()
-            self._random_delay(1, 2)
             
             # Attendre le formulaire
             self.page.wait_for_selector('input[name="username"]', state='visible', timeout=15000)
             
-            # Remplir le nom d'utilisateur
-            username_field = self.page.locator('input[name="username"]')
-            username_field.click(force=True)
-            self._random_delay(0.3, 0.5)
-            username_field.type(self.username, delay=50)
-            
+            # Entrer les identifiants
+            self.page.locator('input[name="username"]').fill(self.username)
             self._random_delay(0.5, 1)
-            
-            # Remplir le mot de passe
-            password_field = self.page.locator('input[name="password"]')
-            password_field.click(force=True)
-            self._random_delay(0.3, 0.5)
-            password_field.type(self.password, delay=50)
-            
-            self._random_delay(0.5, 1)
+            self.page.locator('input[name="password"]').fill(self.password)
+            self._random_delay(1, 2)
             
             # Se connecter
-            login_button = self.page.locator('button[type="submit"]')
-            login_button.click(force=True)
-            
+            self.page.locator('button[type="submit"]').click()
             self._random_delay(5, 8)
             
             # Vérifier les challenges
             if 'challenge' in self.page.url.lower() or 'suspicious' in self.page.url.lower():
                 logger.warning("⚠️ Vérification de sécurité Instagram détectée!")
-                logger.warning("Connectez-vous manuellement d'abord.")
-                self._take_screenshot("security_challenge")
                 return False
             
-            # Fermer les popups post-login
             self._dismiss_popups()
-            
-            self._random_delay(2, 3)
             
             if self._check_logged_in():
                 logger.info("✅ Connexion Instagram réussie")
                 return True
             
-            logger.error("Échec de la connexion Instagram")
             return False
             
         except Exception as e:
             logger.error(f"Erreur connexion Instagram: {e}")
-            self._take_screenshot("login_error")
             return False
     
+    def _click_next_button(self) -> bool:
+        """Clique sur le bouton Next/Suivant avec plusieurs stratégies."""
+        next_selectors = [
+            # Boutons textuels
+            'button:has-text("Next")',
+            'button:has-text("Suivant")',
+            'div[role="button"]:has-text("Next")',
+            'div[role="button"]:has-text("Suivant")',
+            
+            # Sélecteurs spécifiques Instagram
+            'div[role="dialog"] button:has-text("Next")',
+            'div[role="dialog"] button:has-text("Suivant")',
+            
+            # Par position (dernier bouton dans le header du dialog)
+            'div[role="dialog"] header button:last-child',
+        ]
+        
+        for selector in next_selectors:
+            try:
+                btn = self.page.locator(selector).first
+                if btn.is_visible(timeout=3000) and btn.is_enabled():
+                    btn.click(force=True)
+                    logger.info(f"Bouton Next cliqué: {selector}")
+                    return True
+            except:
+                continue
+        
+        # Fallback JavaScript
+        try:
+            clicked = self.page.evaluate("""
+                () => {
+                    const dialog = document.querySelector('div[role="dialog"]');
+                    if (!dialog) return false;
+                    
+                    const buttons = dialog.querySelectorAll('button, div[role="button"]');
+                    for (const btn of buttons) {
+                        const text = btn.textContent.toLowerCase().trim();
+                        if (text === 'next' || text === 'suivant') {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    
+                    // Dernier bouton du header
+                    const header = dialog.querySelector('header, [role="heading"]');
+                    if (header) {
+                        const headerBtns = header.parentElement.querySelectorAll('button');
+                        if (headerBtns.length > 0) {
+                            headerBtns[headerBtns.length - 1].click();
+                            return true;
+                        }
+                    }
+                    
+                    return false;
+                }
+            """)
+            if clicked:
+                logger.info("Bouton Next cliqué via JavaScript")
+                return True
+        except:
+            pass
+        
+        return False
+    
+    def _click_share_button(self) -> bool:
+        """Clique sur le bouton Share/Partager avec plusieurs stratégies."""
+        share_selectors = [
+            # Boutons textuels
+            'button:has-text("Share")',
+            'button:has-text("Partager")',
+            'div[role="button"]:has-text("Share")',
+            'div[role="button"]:has-text("Partager")',
+            
+            # Sélecteurs spécifiques Instagram
+            'div[role="dialog"] button:has-text("Share")',
+            'div[role="dialog"] button:has-text("Partager")',
+        ]
+        
+        for selector in share_selectors:
+            try:
+                btn = self.page.locator(selector).first
+                if btn.is_visible(timeout=3000) and btn.is_enabled():
+                    btn.click(force=True)
+                    logger.info(f"Bouton Share cliqué: {selector}")
+                    return True
+            except:
+                continue
+        
+        # Fallback JavaScript
+        try:
+            clicked = self.page.evaluate("""
+                () => {
+                    const dialog = document.querySelector('div[role="dialog"]');
+                    if (!dialog) return false;
+                    
+                    const buttons = dialog.querySelectorAll('button, div[role="button"]');
+                    for (const btn of buttons) {
+                        const text = btn.textContent.toLowerCase().trim();
+                        if (text === 'share' || text === 'partager') {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                }
+            """)
+            if clicked:
+                logger.info("Bouton Share cliqué via JavaScript")
+                return True
+        except:
+            pass
+        
+        return False
+    
     def _publish(self, text: str, image_path: str = None, video_path: str = None) -> bool:
-        """Publie un post sur Instagram."""
+        """
+        Publie un post sur Instagram.
+        Flow complet: Upload → Crop → Filter → Caption → Share
+        """
         try:
             media_path = image_path or video_path
             
@@ -182,15 +279,17 @@ class InstagramPoster(BasePoster):
             
             self.page.goto(self.HOME_URL, wait_until='domcontentloaded', timeout=60000)
             self._random_delay(2, 3)
-            
             self._dismiss_popups()
             
-            # Cliquer sur "Créer"
+            # ===== ÉTAPE 1: Cliquer sur "Créer" =====
+            logger.info("Étape 1: Ouverture du dialog de création...")
+            
             create_selectors = [
                 'svg[aria-label="New post"]',
                 'svg[aria-label="Nouvelle publication"]',
                 '[aria-label="Create"]',
                 '[aria-label="Créer"]',
+                'a[href="/create/style/"]',
             ]
             
             clicked = False
@@ -198,18 +297,23 @@ class InstagramPoster(BasePoster):
                 try:
                     element = self.page.locator(selector).first
                     if element.is_visible(timeout=3000):
+                        # Cliquer sur le parent (le lien/bouton)
                         parent = element.locator('xpath=..')
                         parent.click(force=True)
                         clicked = True
+                        logger.info(f"Bouton Créer cliqué: {selector}")
                         break
                 except:
                     continue
             
             if not clicked:
-                # Essayer le menu latéral
+                # Essayer via le menu latéral
                 try:
-                    self.page.locator('span:has-text("Créer"), span:has-text("Create")').first.click(force=True)
-                    clicked = True
+                    menu_create = self.page.locator('span:has-text("Create"), span:has-text("Créer")').first
+                    if menu_create.is_visible(timeout=3000):
+                        menu_create.click(force=True)
+                        clicked = True
+                        logger.info("Bouton Créer cliqué via menu")
                 except:
                     pass
             
@@ -217,56 +321,108 @@ class InstagramPoster(BasePoster):
                 raise Exception("Bouton Créer non trouvé")
             
             self._random_delay(2, 3)
+            self._take_screenshot("create_dialog_opened")
             
-            # Upload du fichier
+            # ===== ÉTAPE 2: Upload du fichier =====
+            logger.info("Étape 2: Upload du média...")
+            
             file_input = self.page.locator('input[type="file"]').first
             file_input.set_input_files(media_path)
             
             self._random_delay(3, 5)
+            self._take_screenshot("media_uploaded")
             
-            # Cliquer sur "Suivant" (recadrage)
-            next_btn = self.page.locator('button:has-text("Next"), button:has-text("Suivant")').first
-            if next_btn.is_visible(timeout=5000):
-                next_btn.click(force=True)
+            # ===== ÉTAPE 3: Recadrage (Crop) - Cliquer sur "Next" =====
+            logger.info("Étape 3: Recadrage (Crop)...")
             
-            self._random_delay(2, 3)
+            if self._click_next_button():
+                self._random_delay(2, 3)
+                self._take_screenshot("after_crop")
+            else:
+                logger.warning("Bouton Next (crop) non trouvé, tentative de continuer...")
             
-            # Cliquer sur "Suivant" (filtres)
-            next_btn = self.page.locator('button:has-text("Next"), button:has-text("Suivant")').first
-            if next_btn.is_visible(timeout=3000):
-                next_btn.click(force=True)
+            # ===== ÉTAPE 4: Filtres - Cliquer sur "Next" =====
+            logger.info("Étape 4: Filtres...")
             
-            self._random_delay(2, 3)
+            if self._click_next_button():
+                self._random_delay(2, 3)
+                self._take_screenshot("after_filter")
+            else:
+                logger.warning("Bouton Next (filter) non trouvé, tentative de continuer...")
             
-            # Ajouter la légende
+            # ===== ÉTAPE 5: Ajouter la légende =====
+            logger.info("Étape 5: Ajout de la légende...")
+            
             caption_selectors = [
                 'textarea[aria-label*="caption"]',
                 'textarea[aria-label*="légende"]',
-                '[contenteditable="true"]',
+                'textarea[aria-label*="Write a caption"]',
+                'textarea[aria-label*="Écrivez une légende"]',
+                'div[role="dialog"] textarea',
+                'div[contenteditable="true"][role="textbox"]',
+                'div[aria-label*="caption"]',
             ]
             
+            caption_field = None
             for selector in caption_selectors:
                 try:
                     field = self.page.locator(selector).first
                     if field.is_visible(timeout=3000):
-                        field.click(force=True)
-                        self._random_delay(0.5, 1)
-                        field.type(text, delay=30)
+                        caption_field = field
+                        logger.info(f"Champ légende trouvé: {selector}")
                         break
                 except:
                     continue
             
-            self._random_delay(2, 3)
+            if caption_field:
+                caption_field.click(force=True)
+                self._random_delay(0.5, 1)
+                caption_field.type(text, delay=30)
+                self._random_delay(1, 2)
+                self._take_screenshot("caption_added")
+            else:
+                logger.warning("Champ de légende non trouvé")
             
-            # Partager
-            share_btn = self.page.locator('button:has-text("Share"), button:has-text("Partager")').first
-            if share_btn.is_visible(timeout=3000):
-                share_btn.click(force=True)
+            # ===== ÉTAPE 6: Partager =====
+            logger.info("Étape 6: Publication (Share)...")
             
-            self._random_delay(5, 10)
+            if self._click_share_button():
+                self._random_delay(5, 10)
+                self._take_screenshot("after_share")
+            else:
+                # Dernière tentative
+                logger.info("Tentative alternative pour le bouton Share...")
+                try:
+                    # Chercher n'importe quel bouton bleu/primaire
+                    primary_btn = self.page.locator('div[role="dialog"] button[type="button"]').last
+                    if primary_btn.is_visible() and primary_btn.is_enabled():
+                        btn_text = primary_btn.text_content()
+                        logger.info(f"Clic sur bouton: {btn_text}")
+                        primary_btn.click(force=True)
+                        self._random_delay(5, 10)
+                except:
+                    raise Exception("Bouton Share/Partager non trouvé")
             
-            self._take_screenshot("published")
-            logger.info("✅ Publication Instagram terminée")
+            # Vérifier le succès (message "Post shared" ou fermeture du dialog)
+            try:
+                success_indicators = [
+                    'text=Your post has been shared',
+                    'text=Votre publication a été partagée',
+                    'text=Post shared',
+                    'text=Publication partagée',
+                ]
+                
+                for indicator in success_indicators:
+                    try:
+                        if self.page.locator(indicator).is_visible(timeout=3000):
+                            logger.info("✅ Confirmation de publication détectée")
+                            break
+                    except:
+                        continue
+            except:
+                pass
+            
+            logger.info("✅ Publication Instagram terminée!")
             return True
             
         except Exception as e:
